@@ -130,10 +130,13 @@ Environment variable overrides:
 
 ## CI Checks
 
-All of these must pass:
+**IMPORTANT: Never push without running all CI checks locally first.** Failing CI generates error emails and clutters the commit history with fix-up commits. Always run these before pushing:
+
 ```fish
-cargo build
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo fmt -- --check
+cargo fmt                                      # fix formatting
+cargo clippy --all-targets -- -D warnings      # lint (must pass clean)
+cargo test                                     # all tests must pass
+cargo build                                    # must compile
 ```
+
+If any check fails, fix the issue before pushing. Do not push with the intent to "fix it in the next commit".
