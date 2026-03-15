@@ -9,7 +9,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use dialoguer::{Input, Password, Select};
+use dialoguer::{Confirm, Input, Password, Select};
 
 use crate::{AudioConfig, Config, GeneralConfig, GroqConfig, LocalWhisperConfig, OpenAiConfig};
 
@@ -40,20 +40,60 @@ const WHISPER_MODEL_CHOICES: &[&str] = &[
 ];
 const WHISPER_MODEL_NAMES: &[&str] = &["tiny.en", "base.en", "small.en"];
 
+/// Try to load an existing config from disk.
+fn load_existing_config() -> Option<Config> {
+    let path = crate::config_path();
+    if !path.exists() {
+        return None;
+    }
+    let contents = fs::read_to_string(&path).ok()?;
+    toml::from_str(&contents).ok()
+}
+
+/// Mask an API key for display, showing only the last 4 characters.
+fn mask_api_key(key: &str) -> String {
+    if key.len() <= 4 {
+        "****".to_string()
+    } else {
+        format!("****{}", &key[key.len() - 4..])
+    }
+}
+
 /// Run the full interactive setup flow.
 ///
 /// This function does NOT require the daemon to be running.
 pub fn run_setup() -> Result<()> {
     println!("\n{BOLD}whisrs setup{RESET} — interactive onboarding\n");
 
+    // Check for existing config.
+    if let Some(existing_cfg) = load_existing_config() {
+        println!(
+            "  {GREEN}Found existing config{RESET} (backend: {BOLD}{}{RESET})",
+            existing_cfg.general.backend
+        );
+        println!();
+        let choice = Select::new()
+            .with_prompt("What would you like to do?")
+            .items(&["Use existing", "Start fresh"])
+            .default(0)
+            .interact()
+            .context("failed to read setup mode")?;
+        if choice == 0 {
+            println!("\n  {GREEN}Keeping existing config.{RESET}");
+            print_done();
+            return Ok(());
+        }
+    }
+
     // 1. Select backend.
-    let backend = select_backend()?;
+    let backend = select_backend(None)?;
 
     // 2. Configure backend (API key or model download).
-    let (groq_config, openai_config, local_whisper_config) = configure_backend(&backend)?;
+    let (groq_config, openai_config, local_whisper_config) =
+        configure_backend(&backend, None)?;
 
     // 3. Language.
-    let language = select_language()?;
+    let language = select_language(None)?;
 
     // 4. Test microphone.
     test_microphone();
@@ -98,11 +138,25 @@ pub fn run_setup() -> Result<()> {
 }
 
 /// Prompt the user to select a transcription backend.
-fn select_backend() -> Result<String> {
+fn select_backend(existing: Option<&Config>) -> Result<String> {
+    // Determine the default index based on existing config.
+    let default_idx = existing
+        .map(|cfg| {
+            let b = cfg.general.backend.as_str();
+            match b {
+                "groq" => 0,
+                "openai-realtime" => 1,
+                "openai" => 2,
+                _ if b.starts_with("local") => 3,
+                _ => 0,
+            }
+        })
+        .unwrap_or(0);
+
     let selection = Select::new()
         .with_prompt("Select a transcription backend")
         .items(BACKEND_CHOICES)
-        .default(0)
+        .default(default_idx)
         .interact()
         .context("failed to read backend selection")?;
 
@@ -151,6 +205,7 @@ fn select_local_engine() -> Result<String> {
 /// Configure the selected backend (API key or model path).
 fn configure_backend(
     backend: &str,
+    existing: Option<&Config>,
 ) -> Result<(
     Option<GroqConfig>,
     Option<OpenAiConfig>,
@@ -158,23 +213,26 @@ fn configure_backend(
 )> {
     match backend {
         "groq" => {
-            let api_key = prompt_api_key(
+            let existing_key = existing.and_then(|c| c.groq.as_ref()).map(|g| &g.api_key);
+            let api_key = prompt_api_key_with_existing(
                 "Groq API key",
                 "Get one free at https://console.groq.com/keys",
+                existing_key,
             )?;
-            Ok((
-                Some(GroqConfig {
-                    api_key,
-                    model: "whisper-large-v3-turbo".to_string(),
-                }),
-                None,
-                None,
-            ))
+            let model = existing
+                .and_then(|c| c.groq.as_ref())
+                .map(|g| g.model.clone())
+                .unwrap_or_else(|| "whisper-large-v3-turbo".to_string());
+            Ok((Some(GroqConfig { api_key, model }), None, None))
         }
         "openai-realtime" | "openai" => {
-            let api_key = prompt_api_key(
+            let existing_key = existing
+                .and_then(|c| c.openai.as_ref())
+                .map(|o| &o.api_key);
+            let api_key = prompt_api_key_with_existing(
                 "OpenAI API key",
                 "Get one at https://platform.openai.com/api-keys",
+                existing_key,
             )?;
             let model = if backend == "openai-realtime" {
                 "gpt-4o-mini-transcribe".to_string()
@@ -320,8 +378,28 @@ fn download_whisper_model(model_name: &str, model_dir: &std::path::Path) -> Resu
     Ok(())
 }
 
-/// Prompt for an API key using hidden input.
-fn prompt_api_key(prompt: &str, hint: &str) -> Result<String> {
+/// Prompt for an API key, offering to keep the existing one if present.
+fn prompt_api_key_with_existing(
+    prompt: &str,
+    hint: &str,
+    existing_key: Option<&String>,
+) -> Result<String> {
+    if let Some(key) = existing_key {
+        if !key.is_empty() {
+            println!(
+                "  Existing API key found ({BOLD}{}{RESET})",
+                mask_api_key(key)
+            );
+            let keep = Confirm::new()
+                .with_prompt("Keep existing key?")
+                .default(true)
+                .interact()
+                .unwrap_or(true);
+            if keep {
+                return Ok(key.clone());
+            }
+        }
+    }
     println!("  {DIM}{hint}{RESET}");
     let key = Password::new()
         .with_prompt(prompt)
@@ -334,10 +412,13 @@ fn prompt_api_key(prompt: &str, hint: &str) -> Result<String> {
 }
 
 /// Ask the user for their preferred language.
-fn select_language() -> Result<String> {
+fn select_language(existing: Option<&Config>) -> Result<String> {
+    let default_lang = existing
+        .map(|c| c.general.language.clone())
+        .unwrap_or_else(|| "en".to_string());
     let language: String = Input::new()
         .with_prompt("Language (ISO 639-1 code, or \"auto\" for auto-detect)")
-        .default("en".to_string())
+        .default(default_lang)
         .interact_text()
         .context("failed to read language")?;
     Ok(language)
