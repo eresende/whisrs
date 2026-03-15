@@ -1,9 +1,9 @@
 ```
-         __    _
-  _    _| |__ |_|___ _ __ ___
- \ \//\ / '_ \| / __| '__/ __|
-  \  /\ \ | | | \__ \ |  \__ \
-   \/  \/|_| |_|_|___/_|  |___/
+            _     _
+ __      __| |__ (_)___  _ __ ___
+ \ \ /\ / /| '_ \| / __|| '__/ __|
+  \ V  V / | | | | \__ \| |  \__ \
+   \_/\_/  |_| |_|_|___/|_|  |___/
 
   speak. type. done.
 ```
@@ -13,9 +13,6 @@
 **Linux-first voice-to-text dictation, written in Rust.**
 
 Press a hotkey, speak, and your words appear at the cursor — in any app, any window manager, any desktop environment. Fast, private, open source.
-
-![Demo placeholder](assets/demo.gif)
-*Demo coming soon — record yourself dictating and see text stream at the cursor.*
 
 ---
 
