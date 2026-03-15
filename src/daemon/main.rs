@@ -762,9 +762,7 @@ async fn run_streaming_pipeline(
             } else {
                 send_notification(
                     "whisrs",
-                    &format!(
-                        "Transcription failed — partial text may have been typed.\n{err_msg}"
-                    ),
+                    &format!("Transcription failed — partial text may have been typed.\n{err_msg}"),
                 );
             }
         }

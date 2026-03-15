@@ -89,8 +89,7 @@ pub fn run_setup() -> Result<()> {
     let backend = select_backend(None)?;
 
     // 2. Configure backend (API key or model download).
-    let (groq_config, openai_config, local_whisper_config) =
-        configure_backend(&backend, None)?;
+    let (groq_config, openai_config, local_whisper_config) = configure_backend(&backend, None)?;
 
     // 3. Language.
     let language = select_language(None)?;
@@ -226,9 +225,7 @@ fn configure_backend(
             Ok((Some(GroqConfig { api_key, model }), None, None))
         }
         "openai-realtime" | "openai" => {
-            let existing_key = existing
-                .and_then(|c| c.openai.as_ref())
-                .map(|o| &o.api_key);
+            let existing_key = existing.and_then(|c| c.openai.as_ref()).map(|o| &o.api_key);
             let api_key = prompt_api_key_with_existing(
                 "OpenAI API key",
                 "Get one at https://platform.openai.com/api-keys",
