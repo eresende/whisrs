@@ -11,8 +11,7 @@
 ## Build Commands
 
 ```fish
-cargo build                                    # compile debug binaries
-cargo build --features local-whisper            # compile with local whisper.cpp backend
+cargo build                                    # compile debug binaries (includes all backends)
 cargo clippy --all-targets -- -D warnings      # lint (strict, warnings = errors)
 cargo test                                     # run all tests
 cargo fmt                                      # format code
@@ -98,8 +97,8 @@ docs/
 
 ## Feature Flags
 
-- `default = []` — builds with all cloud backends (Groq, OpenAI Realtime, OpenAI REST)
-- `local-whisper` — enables whisper-rs (whisper.cpp) for offline transcription. Requires C++ toolchain and libclang.
+- `default = ["local-whisper"]` — builds with all backends (cloud + local whisper.cpp)
+- `local-whisper` — enables whisper-rs (whisper.cpp) for offline transcription. Requires C++ toolchain and libclang. Included by default.
 
 ## Coding Conventions
 

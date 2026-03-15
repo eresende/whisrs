@@ -1,8 +1,6 @@
 //! Local whisper.cpp transcription backend via `whisper-rs`.
 //!
-//! When compiled without the `local-whisper` feature, this module provides a stub
-//! that returns an error. When compiled with `local-whisper`, it uses whisper-rs
-//! with a sliding window approach for pseudo-streaming.
+//! Uses whisper-rs with a sliding window approach for pseudo-streaming.
 //!
 //! Deduplication strategy: each window is transcribed with `set_initial_prompt()`
 //! set to the previous output for consistency. Text-based n-gram overlap removal
@@ -10,47 +8,32 @@
 //! because whisper often produces a single segment with `start_timestamp=0`,
 //! making timestamp-based approaches unreliable.
 
-#[cfg(feature = "local-whisper")]
 use std::sync::Arc;
 
 use async_trait::async_trait;
-#[cfg(feature = "local-whisper")]
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-#[cfg(feature = "local-whisper")]
 use super::dedup::DeduplicationTracker;
 use super::{TranscriptionBackend, TranscriptionConfig};
-#[cfg(feature = "local-whisper")]
 use crate::audio::AudioChunk;
 
-#[cfg(feature = "local-whisper")]
-use tokio::sync::mpsc;
-
 /// Sliding window parameters for pseudo-streaming.
-#[cfg(feature = "local-whisper")]
 const WINDOW_SECS: usize = 8;
-#[cfg(feature = "local-whisper")]
 const STEP_SECS: usize = 2;
-#[cfg(feature = "local-whisper")]
 const SAMPLE_RATE: usize = 16_000;
-#[cfg(feature = "local-whisper")]
 const WINDOW_SAMPLES: usize = WINDOW_SECS * SAMPLE_RATE;
-#[cfg(feature = "local-whisper")]
 const STEP_SAMPLES: usize = STEP_SECS * SAMPLE_RATE;
 /// Shorter initial window for faster first result.
-#[cfg(feature = "local-whisper")]
 const INITIAL_WINDOW_SECS: usize = 4;
-#[cfg(feature = "local-whisper")]
 const INITIAL_WINDOW_SAMPLES: usize = INITIAL_WINDOW_SECS * SAMPLE_RATE;
 
 /// Silence threshold — must match or be below the daemon's auto-stop threshold
 /// (0.003) so we never skip windows that auto-stop considers speech.
-#[cfg(feature = "local-whisper")]
 const SILENCE_THRESHOLD: f64 = 0.003;
 
 /// Local whisper.cpp transcription backend.
 pub struct LocalWhisperBackend {
-    #[cfg(feature = "local-whisper")]
     ctx: Option<Arc<whisper_rs::WhisperContext>>,
     #[allow(dead_code)]
     model_path: String,
@@ -59,27 +42,19 @@ pub struct LocalWhisperBackend {
 impl LocalWhisperBackend {
     /// Create a new local whisper backend, eagerly loading the model.
     pub fn new(model_path: String) -> Self {
-        #[cfg(feature = "local-whisper")]
-        {
-            let ctx = match Self::load_model(&model_path) {
-                Ok(ctx) => {
-                    info!("loaded whisper model from {model_path}");
-                    Some(Arc::new(ctx))
-                }
-                Err(e) => {
-                    warn!("failed to load whisper model from {model_path}: {e}");
-                    None
-                }
-            };
-            Self { ctx, model_path }
-        }
-        #[cfg(not(feature = "local-whisper"))]
-        {
-            Self { model_path }
-        }
+        let ctx = match Self::load_model(&model_path) {
+            Ok(ctx) => {
+                info!("loaded whisper model from {model_path}");
+                Some(Arc::new(ctx))
+            }
+            Err(e) => {
+                warn!("failed to load whisper model from {model_path}: {e}");
+                None
+            }
+        };
+        Self { ctx, model_path }
     }
 
-    #[cfg(feature = "local-whisper")]
     fn load_model(path: &str) -> anyhow::Result<whisper_rs::WhisperContext> {
         if !std::path::Path::new(path).exists() {
             anyhow::bail!("model file not found: {path}. Run 'whisrs setup' to download a model.");
@@ -105,7 +80,6 @@ fn i16_to_f32(samples: &[i16]) -> Vec<f32> {
 ///
 /// - `prompt`: previous transcription to condition this window for consistency.
 ///   Whisper uses it to maintain context across overlapping windows.
-#[cfg(feature = "local-whisper")]
 fn run_whisper_inference(
     ctx: &whisper_rs::WhisperContext,
     audio: &[f32],
@@ -157,26 +131,6 @@ fn run_whisper_inference(
     Ok(text.trim().to_string())
 }
 
-// --- Stub implementation when feature is disabled ---
-
-#[cfg(not(feature = "local-whisper"))]
-#[async_trait]
-impl TranscriptionBackend for LocalWhisperBackend {
-    async fn transcribe(
-        &self,
-        _audio: &[u8],
-        _config: &TranscriptionConfig,
-    ) -> anyhow::Result<String> {
-        anyhow::bail!(
-            "local whisper backend not available — whisrs was compiled without the `local-whisper` feature. \
-             Rebuild with `cargo build --features local-whisper` and ensure libclang is installed."
-        )
-    }
-}
-
-// --- Full implementation when feature is enabled ---
-
-#[cfg(feature = "local-whisper")]
 #[async_trait]
 impl TranscriptionBackend for LocalWhisperBackend {
     async fn transcribe(

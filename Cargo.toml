@@ -14,7 +14,7 @@ name = "whisrsd"
 path = "src/daemon/main.rs"
 
 [features]
-default = []
+default = ["local-whisper"]
 local-whisper = ["dep:whisper-rs"]
 
 [dependencies]

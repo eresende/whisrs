@@ -67,60 +67,96 @@ whisrs is noticeably faster at typing transcribed text:
 
 ## Quick Start
 
-### Build
+### One-line install
 
 ```bash
-# Dependencies (Arch Linux)
-sudo pacman -S base-devel alsa-lib libxkbcommon
+git clone https://github.com/y0sif/whisrs && cd whisrs && ./install.sh
+```
 
-# Build (cloud backends only)
+The install script handles everything:
+1. Installs system dependencies (detects your distro)
+2. Builds the project (all backends included — cloud and local)
+3. Installs `whisrs` and `whisrsd` to `~/.cargo/bin/`
+4. Runs interactive setup — pick your backend, enter API key or download a local model
+5. Fixes `/dev/uinput` permissions (asks for sudo)
+6. Installs and enables the systemd service
+7. Adds a keybinding to your compositor (Hyprland/Sway auto-detected)
+
+After install, **press your hotkey** to start recording, **press again** to stop. Text appears at your cursor.
+
+Want to switch backends later? Just run `whisrs setup` again.
+
+<details>
+<summary><b>Manual install (step by step)</b></summary>
+
+#### 1. Dependencies
+
+```bash
+# Arch Linux
+sudo pacman -S base-devel alsa-lib libxkbcommon clang cmake
+
+# Debian/Ubuntu
+sudo apt install build-essential libasound2-dev libxkbcommon-dev libclang-dev cmake
+
+# Fedora
+sudo dnf install gcc-c++ alsa-lib-devel libxkbcommon-devel clang-devel cmake
+```
+
+#### 2. Build
+
+```bash
 git clone https://github.com/y0sif/whisrs
 cd whisrs
-cargo build --release
-
-# Build with local whisper.cpp (offline transcription)
-sudo pacman -S clang cmake    # additional deps for whisper.cpp
-cargo build --release --features local-whisper
+cargo install --path .
 ```
 
-### Setup
+This builds everything — cloud backends and local whisper.cpp support are all included in a single binary.
+
+#### 3. Setup
 
 ```bash
-# Interactive setup — picks your backend, enters API key
-./target/release/whisrs setup
-
-# Or manually create ~/.config/whisrs/config.toml
+whisrs setup
 ```
 
-### uinput Permissions
+The interactive setup will walk you through backend selection, API keys / model download, microphone test, uinput permissions, systemd service, and keybindings.
 
-whisrs needs write access to `/dev/uinput`:
+#### 4. Manual uinput permissions (if you skipped during setup)
 
 ```bash
 sudo cp contrib/99-whisrs.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
 sudo udevadm trigger
+sudo usermod -aG input $USER
 # Log out and back in
 ```
 
-### Run
+#### 5. Manual daemon start (if you skipped during setup)
 
 ```bash
-# Start the daemon
-./target/release/whisrsd &
+# Foreground
+whisrsd
 
-# Or use the systemd service
+# Background
+whisrsd &
+
+# Systemd (recommended)
 cp contrib/whisrs.service ~/.config/systemd/user/
 systemctl --user enable --now whisrs.service
 ```
 
-### Bind a Hotkey
+#### 6. Bind a hotkey
 
-Add to your WM/DE config. Example for Hyprland:
+Example for Hyprland (`~/.config/hypr/hyprland.conf`):
+```
+bind = $mainMod, W, exec, whisrs toggle
+```
 
+Example for Sway (`~/.config/sway/config`):
 ```
-bind = $mainMod, W, exec, /path/to/whisrs toggle
+bindsym $mod+w exec whisrs toggle
 ```
+
+</details>
 
 Then: **press hotkey** to start recording, **press again** to stop and transcribe. Text appears at your cursor.
 
@@ -143,14 +179,11 @@ OpenAI Realtime is the premium option — true streaming over WebSocket means te
 
 ### Local whisper.cpp
 
-Run transcription entirely on your machine — no API key, no internet, no data leaves your device.
+Run transcription entirely on your machine — no API key, no internet, no data leaves your device. Local whisper support is included in every build — no special flags needed.
 
 ```bash
-# Build with local support
-cargo build --release --features local-whisper
-
 # Run setup — select Local > whisper.cpp, pick a model, download automatically
-./target/release/whisrs setup
+whisrs setup
 ```
 
 Models are downloaded from HuggingFace during setup:

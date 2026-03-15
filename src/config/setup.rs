@@ -1,7 +1,9 @@
 //! Interactive onboarding flow for `whisrs setup`.
 //!
 //! Guides the user through selecting a backend, entering an API key,
-//! choosing a language, testing the microphone, and writing `config.toml`.
+//! choosing a language, testing the microphone, writing `config.toml`,
+//! setting up uinput permissions, installing the systemd service,
+//! and configuring keybindings.
 
 use std::fs;
 use std::path::PathBuf;
@@ -80,11 +82,17 @@ pub fn run_setup() -> Result<()> {
         config_path.display()
     );
 
-    // 6. Check uinput permissions.
-    check_uinput_permissions();
+    // 6. Check and optionally fix uinput permissions.
+    setup_uinput_permissions();
 
-    // 7. Print next steps.
-    print_next_steps();
+    // 7. Offer to install and enable the systemd service.
+    setup_systemd_service();
+
+    // 8. Offer to add keybinding.
+    setup_keybinding();
+
+    // 9. Print summary.
+    print_done();
 
     Ok(())
 }
@@ -124,28 +132,7 @@ fn select_local_engine() -> Result<String> {
         .context("failed to read engine selection")?;
 
     match selection {
-        0 => {
-            // Check if the binary was compiled with local-whisper support.
-            if !cfg!(feature = "local-whisper") {
-                println!();
-                println!("  {RED}This binary was compiled without local whisper support.{RESET}");
-                println!();
-                println!("  Rebuild with the feature flag:");
-                println!("    {BOLD}cargo install --path . --features local-whisper{RESET}");
-                println!();
-                println!("  Build requirements: libclang, cmake, C++ compiler");
-                println!("    Arch:   {DIM}sudo pacman -S clang cmake{RESET}");
-                println!(
-                    "    Debian: {DIM}sudo apt install libclang-dev cmake build-essential{RESET}"
-                );
-                println!("    Fedora: {DIM}sudo dnf install clang-devel cmake gcc-c++{RESET}");
-                println!();
-                anyhow::bail!(
-                    "rerun `whisrs setup` after rebuilding with --features local-whisper"
-                );
-            }
-            Ok("local-whisper".to_string())
-        }
+        0 => Ok("local-whisper".to_string()),
         1 => {
             println!(
                 "  {YELLOW}Vosk support is coming in a future release. Selecting whisper.cpp instead.{RESET}"
@@ -437,8 +424,8 @@ fn write_config(config: &Config) -> Result<PathBuf> {
     Ok(config_path)
 }
 
-/// Check if /dev/uinput is accessible and print guidance if not.
-fn check_uinput_permissions() {
+/// Check if /dev/uinput is accessible. If not, offer to fix it automatically.
+fn setup_uinput_permissions() {
     use std::fs::OpenOptions;
 
     println!("\n{BOLD}Checking uinput permissions...{RESET}");
@@ -448,38 +435,448 @@ fn check_uinput_permissions() {
             println!("  {GREEN}uinput access: OK{RESET}");
         }
         Err(e) => {
-            if e.kind() == std::io::ErrorKind::PermissionDenied {
-                println!("  {RED}Cannot open /dev/uinput — permission denied.{RESET}");
-                println!();
-                println!("  Fix with one of:");
-                println!();
-                println!("  1. Add yourself to the input group:");
-                println!("     sudo usermod -aG input $USER");
-                println!("     # Then log out and log back in");
-                println!();
-                println!("  2. Install the udev rule (included in contrib/):");
-                println!("     sudo cp contrib/99-whisrs.rules /etc/udev/rules.d/");
-                println!("     sudo udevadm control --reload-rules");
-                println!("     sudo udevadm trigger");
-            } else {
+            if e.kind() != std::io::ErrorKind::PermissionDenied {
                 println!("  {YELLOW}Cannot open /dev/uinput: {e}{RESET}");
+                return;
+            }
+
+            println!("  {RED}Cannot open /dev/uinput — permission denied.{RESET}");
+            println!();
+
+            // Locate the udev rule file (check common locations).
+            let udev_rule_src = find_contrib_file("99-whisrs.rules");
+
+            let choice = Select::new()
+                .with_prompt("Fix uinput permissions?")
+                .items(&[
+                    "Yes — install udev rule + add me to input group (requires sudo)",
+                    "No — I'll do it myself later",
+                ])
+                .default(0)
+                .interact();
+
+            match choice {
+                Ok(0) => {
+                    // Install udev rule.
+                    if let Some(src) = &udev_rule_src {
+                        let status = std::process::Command::new("sudo")
+                            .args(["cp", &src.to_string_lossy(), "/etc/udev/rules.d/"])
+                            .status();
+                        match status {
+                            Ok(s) if s.success() => {
+                                println!("  {GREEN}Installed udev rule{RESET}");
+                                // Reload rules.
+                                let _ = std::process::Command::new("sudo")
+                                    .args(["udevadm", "control", "--reload-rules"])
+                                    .status();
+                                let _ = std::process::Command::new("sudo")
+                                    .args(["udevadm", "trigger"])
+                                    .status();
+                            }
+                            _ => {
+                                println!("  {YELLOW}Failed to install udev rule{RESET}");
+                            }
+                        }
+                    } else {
+                        // Write the rule inline if contrib file not found.
+                        let rule = "KERNEL==\"uinput\", SUBSYSTEM==\"misc\", MODE=\"0660\", GROUP=\"input\", TAG+=\"uaccess\"";
+                        let status = std::process::Command::new("sudo")
+                            .args([
+                                "bash",
+                                "-c",
+                                &format!("echo '{}' > /etc/udev/rules.d/99-whisrs.rules", rule),
+                            ])
+                            .status();
+                        match status {
+                            Ok(s) if s.success() => {
+                                println!("  {GREEN}Installed udev rule{RESET}");
+                                let _ = std::process::Command::new("sudo")
+                                    .args(["udevadm", "control", "--reload-rules"])
+                                    .status();
+                                let _ = std::process::Command::new("sudo")
+                                    .args(["udevadm", "trigger"])
+                                    .status();
+                            }
+                            _ => println!("  {YELLOW}Failed to install udev rule{RESET}"),
+                        }
+                    }
+
+                    // Add user to input group.
+                    let user = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
+                    let status = std::process::Command::new("sudo")
+                        .args(["usermod", "-aG", "input", &user])
+                        .status();
+                    match status {
+                        Ok(s) if s.success() => {
+                            println!("  {GREEN}Added {user} to input group{RESET}");
+                            println!("  {YELLOW}You need to log out and back in for group changes to take effect.{RESET}");
+                        }
+                        _ => {
+                            println!("  {YELLOW}Failed to add user to input group{RESET}");
+                        }
+                    }
+                }
+                _ => {
+                    println!();
+                    println!("  Fix manually with one of:");
+                    println!();
+                    println!("  1. Add yourself to the input group:");
+                    println!("     sudo usermod -aG input $USER");
+                    println!("     # Then log out and log back in");
+                    println!();
+                    println!("  2. Install the udev rule (included in contrib/):");
+                    println!("     sudo cp contrib/99-whisrs.rules /etc/udev/rules.d/");
+                    println!("     sudo udevadm control --reload-rules");
+                    println!("     sudo udevadm trigger");
+                }
             }
         }
     }
 }
 
-/// Print the final "you're ready" message with next steps.
-fn print_next_steps() {
-    println!("\n{GREEN}{BOLD}You're ready!{RESET}");
-    println!();
-    println!("  Start the daemon:");
-    println!("    whisrsd &");
-    println!("  Or enable the systemd service:");
-    println!("    systemctl --user enable --now whisrs.service");
-    println!();
-    println!("  Then bind {BOLD}whisrs toggle{RESET} to a hotkey in your WM/DE.");
+/// Offer to install and enable the systemd user service.
+fn setup_systemd_service() {
+    println!("\n{BOLD}Systemd service...{RESET}");
+
+    let user_service_dir = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("~/.config"))
+        .join("systemd/user");
+    let dest = user_service_dir.join("whisrs.service");
+
+    // Check if service is already installed.
+    if dest.exists() {
+        println!(
+            "  {GREEN}Service already installed at {}{RESET}",
+            dest.display()
+        );
+
+        // Check if it's already enabled.
+        let enabled = std::process::Command::new("systemctl")
+            .args(["--user", "is-enabled", "whisrs.service"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "enabled")
+            .unwrap_or(false);
+
+        if enabled {
+            println!("  {GREEN}Service is already enabled{RESET}");
+            return;
+        }
+    }
+
+    let choice = Select::new()
+        .with_prompt("Enable whisrs daemon to start automatically?")
+        .items(&[
+            "Yes — install and enable systemd service",
+            "No — I'll start it manually",
+        ])
+        .default(0)
+        .interact();
+
+    match choice {
+        Ok(0) => {
+            // Create the systemd user directory if needed.
+            if let Err(e) = fs::create_dir_all(&user_service_dir) {
+                println!(
+                    "  {RED}Failed to create {}: {e}{RESET}",
+                    user_service_dir.display()
+                );
+                return;
+            }
+
+            // Find the service file source.
+            let service_src = find_contrib_file("whisrs.service");
+
+            if let Some(src) = service_src {
+                // Copy the service file.
+                if let Err(e) = fs::copy(&src, &dest) {
+                    println!("  {RED}Failed to copy service file: {e}{RESET}");
+                    return;
+                }
+            } else {
+                // Write the service file inline.
+                let whisrsd_path = which_whisrsd();
+                let service_content = format!(
+                    "[Unit]\n\
+                     Description=whisrs dictation daemon\n\
+                     After=graphical-session.target\n\
+                     \n\
+                     [Service]\n\
+                     Type=simple\n\
+                     ExecStart={whisrsd_path}\n\
+                     Restart=on-failure\n\
+                     RestartSec=3\n\
+                     StandardOutput=journal\n\
+                     StandardError=journal\n\
+                     \n\
+                     [Install]\n\
+                     WantedBy=default.target\n"
+                );
+                if let Err(e) = fs::write(&dest, &service_content) {
+                    println!("  {RED}Failed to write service file: {e}{RESET}");
+                    return;
+                }
+            }
+
+            println!("  {GREEN}Installed service to {}{RESET}", dest.display());
+
+            // Reload and enable.
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "daemon-reload"])
+                .status();
+            let status = std::process::Command::new("systemctl")
+                .args(["--user", "enable", "--now", "whisrs.service"])
+                .status();
+            match status {
+                Ok(s) if s.success() => {
+                    println!("  {GREEN}Service enabled and started{RESET}");
+                }
+                _ => {
+                    println!("  {YELLOW}Failed to enable service — you can do it manually:{RESET}");
+                    println!("    systemctl --user enable --now whisrs.service");
+                }
+            }
+        }
+        _ => {
+            println!("  {DIM}You can start the daemon manually: whisrsd &{RESET}");
+            println!("  {DIM}Or enable the service later:{RESET}");
+            println!("    cp contrib/whisrs.service ~/.config/systemd/user/");
+            println!("    systemctl --user enable --now whisrs.service");
+        }
+    }
+}
+
+/// Detect the compositor and offer to add a keybinding for `whisrs toggle`.
+fn setup_keybinding() {
+    println!("\n{BOLD}Keybinding...{RESET}");
+
+    let compositor = detect_compositor();
+
+    match compositor.as_deref() {
+        Some("hyprland") => setup_hyprland_keybinding(),
+        Some("sway") => setup_sway_keybinding(),
+        Some(name) => {
+            println!("  Detected compositor: {name}");
+            println!(
+                "  {DIM}Add a keybinding for {BOLD}whisrs toggle{RESET}{DIM} in your WM/DE config.{RESET}"
+            );
+        }
+        None => {
+            println!(
+                "  {DIM}Could not detect compositor. Add a keybinding for {BOLD}whisrs toggle{RESET}{DIM} in your WM/DE config.{RESET}"
+            );
+        }
+    }
+}
+
+/// Detect which compositor/WM is running.
+fn detect_compositor() -> Option<String> {
+    // Check HYPRLAND_INSTANCE_SIGNATURE first (most specific).
+    if std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok() {
+        return Some("hyprland".to_string());
+    }
+    // Check SWAYSOCK.
+    if std::env::var("SWAYSOCK").is_ok() {
+        return Some("sway".to_string());
+    }
+    // Fallback: XDG_CURRENT_DESKTOP.
+    if let Ok(desktop) = std::env::var("XDG_CURRENT_DESKTOP") {
+        let lower = desktop.to_lowercase();
+        if lower.contains("hyprland") {
+            return Some("hyprland".to_string());
+        }
+        if lower.contains("sway") {
+            return Some("sway".to_string());
+        }
+        if lower.contains("gnome") {
+            return Some("gnome".to_string());
+        }
+        if lower.contains("kde") || lower.contains("plasma") {
+            return Some("kde".to_string());
+        }
+        if lower.contains("i3") {
+            return Some("i3".to_string());
+        }
+        return Some(lower);
+    }
+    None
+}
+
+/// Offer to add a Hyprland keybinding.
+fn setup_hyprland_keybinding() {
+    println!("  Detected: {GREEN}Hyprland{RESET}");
+
+    let hypr_conf = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("~/.config"))
+        .join("hypr/hyprland.conf");
+
+    if !hypr_conf.exists() {
+        println!(
+            "  {YELLOW}Hyprland config not found at {}{RESET}",
+            hypr_conf.display()
+        );
+        println!("  {DIM}Add this to your config manually:{RESET}");
+        println!("    bind = $mainMod, W, exec, whisrs toggle");
+        return;
+    }
+
+    // Check if binding already exists.
+    if let Ok(contents) = fs::read_to_string(&hypr_conf) {
+        if contents.contains("whisrs toggle") {
+            println!("  {GREEN}Keybinding already configured in hyprland.conf{RESET}");
+            return;
+        }
+    }
+
+    let whisrs_path = which_whisrs();
+
+    let choice = Select::new()
+        .with_prompt("Add keybinding (Super+W) for whisrs toggle?")
+        .items(&["Yes — append to hyprland.conf", "No — I'll add it myself"])
+        .default(0)
+        .interact();
+
+    match choice {
+        Ok(0) => {
+            let binding = format!(
+                "\n# whisrs — voice-to-text dictation\nbind = $mainMod, W, exec, {whisrs_path} toggle\n"
+            );
+            match fs::OpenOptions::new().append(true).open(&hypr_conf) {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    if let Err(e) = file.write_all(binding.as_bytes()) {
+                        println!("  {RED}Failed to write to hyprland.conf: {e}{RESET}");
+                    } else {
+                        println!("  {GREEN}Added binding: Super+W → whisrs toggle{RESET}");
+                        println!("  {DIM}Reload Hyprland config or log out/in to activate.{RESET}");
+                    }
+                }
+                Err(e) => {
+                    println!("  {RED}Failed to open hyprland.conf: {e}{RESET}");
+                }
+            }
+        }
+        _ => {
+            println!("  {DIM}Add this to your hyprland.conf:{RESET}");
+            println!("    bind = $mainMod, W, exec, {whisrs_path} toggle");
+        }
+    }
+}
+
+/// Offer to add a Sway keybinding.
+fn setup_sway_keybinding() {
+    println!("  Detected: {GREEN}Sway{RESET}");
+
+    let sway_conf = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("~/.config"))
+        .join("sway/config");
+
+    if !sway_conf.exists() {
+        println!(
+            "  {YELLOW}Sway config not found at {}{RESET}",
+            sway_conf.display()
+        );
+        println!("  {DIM}Add this to your config manually:{RESET}");
+        println!("    bindsym $mod+w exec whisrs toggle");
+        return;
+    }
+
+    // Check if binding already exists.
+    if let Ok(contents) = fs::read_to_string(&sway_conf) {
+        if contents.contains("whisrs toggle") {
+            println!("  {GREEN}Keybinding already configured in sway config{RESET}");
+            return;
+        }
+    }
+
+    let whisrs_path = which_whisrs();
+
+    let choice = Select::new()
+        .with_prompt("Add keybinding (Mod+W) for whisrs toggle?")
+        .items(&["Yes — append to sway config", "No — I'll add it myself"])
+        .default(0)
+        .interact();
+
+    match choice {
+        Ok(0) => {
+            let binding = format!(
+                "\n# whisrs — voice-to-text dictation\nbindsym $mod+w exec {whisrs_path} toggle\n"
+            );
+            match fs::OpenOptions::new().append(true).open(&sway_conf) {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    if let Err(e) = file.write_all(binding.as_bytes()) {
+                        println!("  {RED}Failed to write to sway config: {e}{RESET}");
+                    } else {
+                        println!("  {GREEN}Added binding: Mod+W → whisrs toggle{RESET}");
+                        println!("  {DIM}Reload Sway config to activate.{RESET}");
+                    }
+                }
+                Err(e) => {
+                    println!("  {RED}Failed to open sway config: {e}{RESET}");
+                }
+            }
+        }
+        _ => {
+            println!("  {DIM}Add this to your sway config:{RESET}");
+            println!("    bindsym $mod+w exec {whisrs_path} toggle");
+        }
+    }
+}
+
+/// Find a file in the contrib/ directory relative to the executable or CWD.
+fn find_contrib_file(name: &str) -> Option<PathBuf> {
+    // Try relative to the executable.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            // Binary might be in target/release/ or target/debug/.
+            for ancestor in exe_dir.ancestors() {
+                let candidate = ancestor.join("contrib").join(name);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    // Try relative to CWD.
+    let cwd_candidate = PathBuf::from("contrib").join(name);
+    if cwd_candidate.exists() {
+        return Some(cwd_candidate);
+    }
+    None
+}
+
+/// Get the path to the `whisrsd` binary.
+fn which_whisrsd() -> String {
+    // Check if it's in PATH.
+    if let Ok(output) = std::process::Command::new("which").arg("whisrsd").output() {
+        if output.status.success() {
+            return String::from_utf8_lossy(&output.stdout).trim().to_string();
+        }
+    }
+    // Fallback to ~/.cargo/bin/whisrsd.
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    home.join(".cargo/bin/whisrsd")
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Get the path to the `whisrs` binary.
+fn which_whisrs() -> String {
+    if let Ok(output) = std::process::Command::new("which").arg("whisrs").output() {
+        if output.status.success() {
+            return String::from_utf8_lossy(&output.stdout).trim().to_string();
+        }
+    }
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    home.join(".cargo/bin/whisrs").to_string_lossy().to_string()
+}
+
+/// Print the final success message.
+fn print_done() {
+    println!("\n{GREEN}{BOLD}You're all set!{RESET}");
     println!();
     println!("  {DIM}Config: ~/.config/whisrs/config.toml{RESET}");
-    println!("  {DIM}Logs:   RUST_LOG=debug whisrsd{RESET}");
+    println!("  {DIM}Logs:   journalctl --user -u whisrs -f{RESET}");
+    println!("  {DIM}Re-run: whisrs setup (to change backend or settings){RESET}");
     println!();
 }
