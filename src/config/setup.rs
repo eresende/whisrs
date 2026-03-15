@@ -124,7 +124,28 @@ fn select_local_engine() -> Result<String> {
         .context("failed to read engine selection")?;
 
     match selection {
-        0 => Ok("local-whisper".to_string()),
+        0 => {
+            // Check if the binary was compiled with local-whisper support.
+            if !cfg!(feature = "local-whisper") {
+                println!();
+                println!("  {RED}This binary was compiled without local whisper support.{RESET}");
+                println!();
+                println!("  Rebuild with the feature flag:");
+                println!("    {BOLD}cargo install --path . --features local-whisper{RESET}");
+                println!();
+                println!("  Build requirements: libclang, cmake, C++ compiler");
+                println!("    Arch:   {DIM}sudo pacman -S clang cmake{RESET}");
+                println!(
+                    "    Debian: {DIM}sudo apt install libclang-dev cmake build-essential{RESET}"
+                );
+                println!("    Fedora: {DIM}sudo dnf install clang-devel cmake gcc-c++{RESET}");
+                println!();
+                anyhow::bail!(
+                    "rerun `whisrs setup` after rebuilding with --features local-whisper"
+                );
+            }
+            Ok("local-whisper".to_string())
+        }
         1 => {
             println!(
                 "  {YELLOW}Vosk support is coming in a future release. Selecting whisper.cpp instead.{RESET}"

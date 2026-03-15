@@ -73,10 +73,14 @@ whisrs is noticeably faster at typing transcribed text:
 # Dependencies (Arch Linux)
 sudo pacman -S base-devel alsa-lib libxkbcommon
 
-# Build
+# Build (cloud backends only)
 git clone https://github.com/YOUR_USERNAME/whisrs
 cd whisrs
 cargo build --release
+
+# Build with local whisper.cpp (offline transcription)
+sudo pacman -S clang cmake    # additional deps for whisper.cpp
+cargo build --release --features local-whisper
 ```
 
 ### Setup
@@ -130,12 +134,34 @@ Then: **press hotkey** to start recording, **press again** to stop and transcrib
 | **OpenAI Realtime** | Cloud (WebSocket) | True streaming | Paid | Best UX — text as you speak |
 | **OpenAI REST** | Cloud (HTTP POST) | Batch | Paid | Simple fallback |
 | **Local whisper.cpp** | Local (CPU/GPU) | Pseudo (sliding window) | Free | Privacy, offline use |
+| **Local Vosk** | Local (CPU) | True streaming | Free | Coming soon |
+| **Local Parakeet** | Local (NVIDIA) | True streaming | Free | Coming soon |
 
 Groq is the default — fast, free tier, good accuracy with `whisper-large-v3-turbo`.
 
 OpenAI Realtime is the premium option — true streaming over WebSocket means text appears at your cursor while you're still speaking.
 
-Local whisper.cpp support is in progress (behind `--features local` flag).
+### Local whisper.cpp
+
+Run transcription entirely on your machine — no API key, no internet, no data leaves your device.
+
+```bash
+# Build with local support
+cargo build --release --features local-whisper
+
+# Run setup — select Local > whisper.cpp, pick a model, download automatically
+./target/release/whisrs setup
+```
+
+Models are downloaded from HuggingFace during setup:
+
+| Model | Size | RAM | Speed (CPU) | Accuracy |
+|---|---|---|---|---|
+| tiny.en | 75 MB | ~273 MB | Real-time | Decent |
+| base.en | 142 MB | ~388 MB | Real-time | Good (recommended) |
+| small.en | 466 MB | ~852 MB | Borderline | Very good |
+
+Streaming works via a sliding window approach: audio is processed in overlapping 8-second windows with prompt conditioning for consistency.
 
 ---
 
@@ -145,7 +171,7 @@ Config file: `~/.config/whisrs/config.toml`
 
 ```toml
 [general]
-backend = "groq"            # groq | openai-realtime | openai | local
+backend = "groq"            # groq | openai-realtime | openai | local-whisper
 language = "en"             # ISO 639-1 or "auto"
 silence_timeout_ms = 2000   # auto-stop after silence (streaming only)
 notify = true               # desktop notifications
@@ -161,7 +187,7 @@ model = "whisper-large-v3-turbo"
 api_key = "sk-..."
 model = "gpt-4o-mini-transcribe"
 
-[local]
+[local-whisper]
 model_path = "~/.local/share/whisrs/models/ggml-base.en.bin"
 ```
 
@@ -245,7 +271,9 @@ whisrs is functional and usable for daily dictation on Hyprland. The core featur
 - [x] Desktop notifications
 - [x] Interactive setup
 - [x] Error UX with actionable messages
-- [ ] Local whisper.cpp backend (stubbed, implementation in progress)
+- [x] Local whisper.cpp backend (sliding window streaming, prompt conditioning, model download)
+- [ ] Local Vosk backend (true streaming, tiny model)
+- [ ] Local Parakeet backend (NVIDIA, ultra-fast streaming)
 - [ ] OpenAI Realtime end-to-end testing
 - [ ] Multi-compositor testing
 - [ ] Filler word removal
