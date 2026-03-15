@@ -2,7 +2,9 @@
 
 pub mod dedup;
 pub mod groq;
-pub mod local;
+pub mod local_parakeet;
+pub mod local_vosk;
+pub mod local_whisper;
 pub mod openai_realtime;
 pub mod openai_rest;
 

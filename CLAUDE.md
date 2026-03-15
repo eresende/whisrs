@@ -12,7 +12,7 @@
 
 ```fish
 cargo build                                    # compile debug binaries
-cargo build --features local                   # compile with local whisper.cpp backend
+cargo build --features local-whisper            # compile with local whisper.cpp backend
 cargo clippy --all-targets -- -D warnings      # lint (strict, warnings = errors)
 cargo test                                     # run all tests
 cargo fmt                                      # format code
@@ -60,7 +60,9 @@ src/
 │   ├── groq.rs             # Groq Whisper API (chunked HTTP, timestamp dedup)
 │   ├── openai_realtime.rs  # OpenAI Realtime API (WebSocket, true streaming)
 │   ├── openai_rest.rs      # OpenAI REST API (simple HTTP POST)
-│   ├── local.rs            # Local whisper.cpp via whisper-rs (feature-gated)
+│   ├── local_whisper.rs    # Local whisper.cpp via whisper-rs (feature-gated)
+│   ├── local_vosk.rs       # Vosk backend stub (coming soon)
+│   ├── local_parakeet.rs   # Parakeet/NVIDIA backend stub (coming soon)
 │   └── dedup.rs            # Timestamp + n-gram deduplication for chunked APIs
 ├── input/
 │   ├── mod.rs              # KeyInjector trait
@@ -97,7 +99,7 @@ docs/
 ## Feature Flags
 
 - `default = []` — builds with all cloud backends (Groq, OpenAI Realtime, OpenAI REST)
-- `local` — enables whisper-rs (whisper.cpp) for offline transcription. Requires C++ toolchain.
+- `local-whisper` — enables whisper-rs (whisper.cpp) for offline transcription. Requires C++ toolchain and libclang.
 
 ## Coding Conventions
 
@@ -120,7 +122,7 @@ Responses: `{"status": "ok", "state": "idle"}`, `{"status": "error", "message": 
 
 Path: `~/.config/whisrs/config.toml` (permissions: 0600)
 
-Backends: `groq`, `openai-realtime`, `openai`, `local`
+Backends: `groq`, `openai-realtime`, `openai`, `local-whisper`, `local-vosk`, `local-parakeet`
 
 Environment variable overrides:
 - `WHISRS_GROQ_API_KEY` — overrides `[groq] api_key`

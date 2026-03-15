@@ -10,7 +10,9 @@ use whisrs::audio::capture::AudioCaptureHandle;
 use whisrs::audio::silence::AutoStopDetector;
 use whisrs::state::{Action, StateMachine};
 use whisrs::transcription::groq::GroqBackend;
-use whisrs::transcription::local::LocalWhisperBackend;
+use whisrs::transcription::local_parakeet::ParakeetBackend;
+use whisrs::transcription::local_vosk::VoskBackend;
+use whisrs::transcription::local_whisper::LocalWhisperBackend;
 use whisrs::transcription::openai_realtime::OpenAIRealtimeBackend;
 use whisrs::transcription::openai_rest::OpenAIRestBackend;
 use whisrs::transcription::{TranscriptionBackend, TranscriptionConfig};
@@ -92,7 +94,9 @@ fn load_config() -> Config {
         audio: Default::default(),
         groq: None,
         openai: None,
-        local: None,
+        local_whisper: None,
+        local_vosk: None,
+        local_parakeet: None,
     }
 }
 
@@ -198,9 +202,9 @@ fn create_backend(config: &Config) -> Arc<dyn TranscriptionBackend> {
             info!("using OpenAI REST transcription backend");
             Arc::new(OpenAIRestBackend::new(api_key))
         }
-        "local" => {
+        "local-whisper" | "local" => {
             let model_path = config
-                .local
+                .local_whisper
                 .as_ref()
                 .map(|l| l.model_path.clone())
                 .unwrap_or_else(|| {
@@ -212,6 +216,36 @@ fn create_backend(config: &Config) -> Arc<dyn TranscriptionBackend> {
                 });
             info!("using local whisper transcription backend (model: {model_path})");
             Arc::new(LocalWhisperBackend::new(model_path))
+        }
+        "local-vosk" => {
+            let model_path = config
+                .local_vosk
+                .as_ref()
+                .map(|l| l.model_path.clone())
+                .unwrap_or_else(|| {
+                    dirs::data_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("~/.local/share"))
+                        .join("whisrs/models/vosk-model-small-en-us-0.15")
+                        .to_string_lossy()
+                        .to_string()
+                });
+            info!("using Vosk transcription backend (model: {model_path})");
+            Arc::new(VoskBackend::new(model_path))
+        }
+        "local-parakeet" => {
+            let model_path = config
+                .local_parakeet
+                .as_ref()
+                .map(|l| l.model_path.clone())
+                .unwrap_or_else(|| {
+                    dirs::data_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("~/.local/share"))
+                        .join("whisrs/models/parakeet-eou-120m")
+                        .to_string_lossy()
+                        .to_string()
+                });
+            info!("using Parakeet transcription backend (model: {model_path})");
+            Arc::new(ParakeetBackend::new(model_path))
         }
         other => {
             warn!("unknown backend '{other}', falling back to groq");
@@ -233,7 +267,9 @@ fn get_model_for_backend(config: &Config) -> String {
             .as_ref()
             .map(|o| o.model.clone())
             .unwrap_or_else(|| "gpt-4o-mini-transcribe".to_string()),
-        "local" => "base.en".to_string(),
+        "local-whisper" | "local" => "base.en".to_string(),
+        "local-vosk" => "small-en-us".to_string(),
+        "local-parakeet" => "eou-120m".to_string(),
         _ => "whisper-large-v3-turbo".to_string(),
     }
 }
@@ -620,7 +656,7 @@ async fn run_streaming_pipeline(
     });
 
     // Forward audio from capture to backend, with auto-stop detection.
-    let mut auto_stop = AutoStopDetector::new(0.01, silence_timeout_ms, 16_000);
+    let mut auto_stop = AutoStopDetector::new(0.003, silence_timeout_ms, 16_000);
 
     while let Some(chunk) = audio_rx.recv().await {
         // Check for auto-stop.

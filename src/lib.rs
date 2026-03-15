@@ -65,8 +65,12 @@ pub struct Config {
     pub groq: Option<GroqConfig>,
     #[serde(default)]
     pub openai: Option<OpenAiConfig>,
-    #[serde(default)]
-    pub local: Option<LocalConfig>,
+    #[serde(default, rename = "local-whisper", alias = "local")]
+    pub local_whisper: Option<LocalWhisperConfig>,
+    #[serde(default, rename = "local-vosk")]
+    pub local_vosk: Option<LocalVoskConfig>,
+    #[serde(default, rename = "local-parakeet")]
+    pub local_parakeet: Option<LocalParakeetConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,7 +125,17 @@ pub struct OpenAiConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalConfig {
+pub struct LocalWhisperConfig {
+    pub model_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalVoskConfig {
+    pub model_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalParakeetConfig {
     pub model_path: String,
 }
 
@@ -234,9 +248,9 @@ impl Config {
                     ));
                 }
             }
-            "local" => {
+            "local-whisper" | "local" => {
                 let model_path = self
-                    .local
+                    .local_whisper
                     .as_ref()
                     .map(|l| l.model_path.clone())
                     .unwrap_or_else(|| {
@@ -249,15 +263,44 @@ impl Config {
                 if !std::path::Path::new(&model_path).exists() {
                     warnings.push(ConfigWarning {
                         message: format!(
-                            "Local backend selected but model file not found: {model_path}\n\
+                            "Local whisper backend selected but model file not found: {model_path}\n\
                              Run 'whisrs setup' to download a model."
                         ),
                     });
                 }
             }
+            "local-vosk" => {
+                let model_path = self
+                    .local_vosk
+                    .as_ref()
+                    .map(|l| l.model_path.clone())
+                    .unwrap_or_default();
+                if model_path.is_empty() || !std::path::Path::new(&model_path).exists() {
+                    warnings.push(ConfigWarning {
+                        message: "Vosk backend selected but model directory not found.\n\
+                             Run 'whisrs setup' to download a model."
+                            .to_string(),
+                    });
+                }
+            }
+            "local-parakeet" => {
+                let model_path = self
+                    .local_parakeet
+                    .as_ref()
+                    .map(|l| l.model_path.clone())
+                    .unwrap_or_default();
+                if model_path.is_empty() || !std::path::Path::new(&model_path).exists() {
+                    warnings.push(ConfigWarning {
+                        message: "Parakeet backend selected but model directory not found.\n\
+                             Run 'whisrs setup' to download a model."
+                            .to_string(),
+                    });
+                }
+            }
             other => {
                 return Err(WhisrsError::Config(format!(
-                    "Unknown backend '{other}'. Valid options: groq, openai, openai-realtime, local"
+                    "Unknown backend '{other}'. Valid options: groq, openai, openai-realtime, \
+                     local-whisper, local-vosk, local-parakeet"
                 )));
             }
         }
@@ -291,7 +334,9 @@ impl Config {
                 .map(|k| !k.is_empty())
                 .unwrap_or(false);
 
-        let has_local = self.local.is_some();
+        let has_local = self.local_whisper.is_some()
+            || self.local_vosk.is_some()
+            || self.local_parakeet.is_some();
 
         has_groq || has_openai || has_local
     }
@@ -486,7 +531,9 @@ mod tests {
             audio: Default::default(),
             groq: None,
             openai: None,
-            local: None,
+            local_whisper: None,
+            local_vosk: None,
+            local_parakeet: None,
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("Unknown backend"));
@@ -504,7 +551,9 @@ mod tests {
             audio: Default::default(),
             groq: None,
             openai: None,
-            local: None,
+            local_whisper: None,
+            local_vosk: None,
+            local_parakeet: None,
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("no API key"));
@@ -523,7 +572,9 @@ mod tests {
                 model: "whisper-large-v3-turbo".to_string(),
             }),
             openai: None,
-            local: None,
+            local_whisper: None,
+            local_vosk: None,
+            local_parakeet: None,
         };
         let result = config.validate();
         assert!(result.is_ok());
@@ -543,7 +594,9 @@ mod tests {
                 model: "whisper-large-v3-turbo".to_string(),
             }),
             openai: None,
-            local: None,
+            local_whisper: None,
+            local_vosk: None,
+            local_parakeet: None,
         };
         let warnings = config.validate().unwrap();
         assert!(warnings

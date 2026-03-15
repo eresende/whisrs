@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use dialoguer::{Input, Password, Select};
 
-use crate::{AudioConfig, Config, GeneralConfig, GroqConfig, LocalConfig, OpenAiConfig};
+use crate::{AudioConfig, Config, GeneralConfig, GroqConfig, LocalWhisperConfig, OpenAiConfig};
 
 // ANSI color codes.
 const GREEN: &str = "\x1b[32m";
@@ -21,14 +21,22 @@ const RESET: &str = "\x1b[0m";
 
 /// Backend choices presented to the user.
 const BACKEND_CHOICES: &[&str] = &[
-    "Groq          (free, fast, cloud)",
+    "Groq            (free, fast, cloud)",
     "OpenAI Realtime (best streaming, cloud)",
     "OpenAI REST     (simple, cloud)",
-    "Local           (offline, whisper.cpp)",
+    "Local           (offline, no API key needed)",
 ];
 
 /// Map selection index to backend string used in config.
 const BACKEND_VALUES: &[&str] = &["groq", "openai-realtime", "openai", "local"];
+
+/// Whisper model choices (name, file size, description).
+const WHISPER_MODEL_CHOICES: &[&str] = &[
+    "tiny.en    (75 MB,  decent accuracy, very fast)",
+    "base.en    (142 MB, good accuracy, real-time)  <- recommended",
+    "small.en   (466 MB, very good accuracy, slower)",
+];
+const WHISPER_MODEL_NAMES: &[&str] = &["tiny.en", "base.en", "small.en"];
 
 /// Run the full interactive setup flow.
 ///
@@ -39,8 +47,8 @@ pub fn run_setup() -> Result<()> {
     // 1. Select backend.
     let backend = select_backend()?;
 
-    // 2. API key (for cloud backends).
-    let (groq_config, openai_config, local_config) = configure_backend(&backend)?;
+    // 2. Configure backend (API key or model download).
+    let (groq_config, openai_config, local_whisper_config) = configure_backend(&backend)?;
 
     // 3. Language.
     let language = select_language()?;
@@ -61,7 +69,9 @@ pub fn run_setup() -> Result<()> {
         },
         groq: groq_config,
         openai: openai_config,
-        local: local_config,
+        local_whisper: local_whisper_config,
+        local_vosk: None,
+        local_parakeet: None,
     };
 
     let config_path = write_config(&config)?;
@@ -88,9 +98,46 @@ fn select_backend() -> Result<String> {
         .interact()
         .context("failed to read backend selection")?;
 
-    let backend = BACKEND_VALUES[selection].to_string();
+    let mut backend = BACKEND_VALUES[selection].to_string();
+
+    // If "local" selected, show engine sub-menu.
+    if backend == "local" {
+        backend = select_local_engine()?;
+    }
+
     println!("  {DIM}Selected: {backend}{RESET}");
     Ok(backend)
+}
+
+/// Sub-menu for choosing a local transcription engine.
+fn select_local_engine() -> Result<String> {
+    println!();
+    let selection = Select::new()
+        .with_prompt("Select a local engine")
+        .items(&[
+            "whisper.cpp     (recommended — best accuracy, CPU/GPU)",
+            "Vosk            (coming soon — true streaming, tiny model)",
+            "Parakeet        (coming soon — NVIDIA, ultra-fast)",
+        ])
+        .default(0)
+        .interact()
+        .context("failed to read engine selection")?;
+
+    match selection {
+        0 => Ok("local-whisper".to_string()),
+        1 => {
+            println!(
+                "  {YELLOW}Vosk support is coming in a future release. Selecting whisper.cpp instead.{RESET}"
+            );
+            Ok("local-whisper".to_string())
+        }
+        _ => {
+            println!(
+                "  {YELLOW}Parakeet support is coming in a future release. Selecting whisper.cpp instead.{RESET}"
+            );
+            Ok("local-whisper".to_string())
+        }
+    }
 }
 
 /// Configure the selected backend (API key or model path).
@@ -99,7 +146,7 @@ fn configure_backend(
 ) -> Result<(
     Option<GroqConfig>,
     Option<OpenAiConfig>,
-    Option<LocalConfig>,
+    Option<LocalWhisperConfig>,
 )> {
     match backend {
         "groq" => {
@@ -143,31 +190,126 @@ fn configure_backend(
             };
             Ok((None, Some(OpenAiConfig { api_key, model }), None))
         }
-        "local" => {
-            let default_model_path = dirs::data_dir()
-                .unwrap_or_else(|| PathBuf::from("~/.local/share"))
-                .join("whisrs/models/ggml-base.en.bin");
+        "local-whisper" => {
+            // Select model size.
+            println!();
+            let model_idx = Select::new()
+                .with_prompt("Select a whisper model")
+                .items(WHISPER_MODEL_CHOICES)
+                .default(1) // base.en is recommended
+                .interact()
+                .context("failed to read model selection")?;
 
-            let model_path: String = Input::new()
-                .with_prompt("Model file path")
-                .default(default_model_path.to_string_lossy().to_string())
-                .interact_text()
-                .context("failed to read model path")?;
+            let model_name = WHISPER_MODEL_NAMES[model_idx];
 
-            if !std::path::Path::new(&model_path).exists() {
-                println!("  {YELLOW}Warning: model file not found at {model_path}{RESET}");
-                println!(
-                    "  {DIM}Download a model from https://huggingface.co/ggerganov/whisper.cpp/tree/main{RESET}"
-                );
-                println!(
-                    "  {DIM}Recommended: ggml-base.en.bin (142 MB) for good accuracy/speed{RESET}"
-                );
+            let model_dir = default_model_dir();
+            let dest = model_dir.join(format!("ggml-{model_name}.bin"));
+
+            if dest.exists() {
+                println!("  {GREEN}Model already exists at {}{RESET}", dest.display());
+            } else {
+                // Offer to download.
+                let should_download = Select::new()
+                    .with_prompt("Download model now?")
+                    .items(&["Yes, download now", "No, I'll download it manually"])
+                    .default(0)
+                    .interact()
+                    .context("failed to read download choice")?;
+
+                if should_download == 0 {
+                    download_whisper_model(model_name, &model_dir)?;
+                } else {
+                    println!("  {DIM}Download the model manually from:{RESET}");
+                    println!(
+                        "  {DIM}https://huggingface.co/ggerganov/whisper.cpp/tree/main{RESET}"
+                    );
+                    println!("  {DIM}Place it at: {}{RESET}", dest.display());
+                }
             }
 
-            Ok((None, None, Some(LocalConfig { model_path })))
+            let model_path = dest.to_string_lossy().to_string();
+            Ok((None, None, Some(LocalWhisperConfig { model_path })))
         }
         _ => Ok((None, None, None)),
     }
+}
+
+/// Return the default directory for storing whisper models.
+fn default_model_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("~/.local/share"))
+        .join("whisrs/models")
+}
+
+/// Download a whisper.cpp GGML model from HuggingFace.
+fn download_whisper_model(model_name: &str, model_dir: &std::path::Path) -> Result<()> {
+    use std::io::{Read, Write};
+
+    let url =
+        format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{model_name}.bin");
+    let dest = model_dir.join(format!("ggml-{model_name}.bin"));
+
+    fs::create_dir_all(model_dir)
+        .with_context(|| format!("failed to create model directory {}", model_dir.display()))?;
+
+    println!("\n  Downloading ggml-{model_name}.bin from HuggingFace...");
+
+    // Run download in a separate thread to avoid conflict with tokio runtime.
+    let dest_clone = dest.clone();
+    let url_clone = url.clone();
+    std::thread::spawn(move || -> Result<()> {
+        let response = reqwest::blocking::Client::builder()
+            .user_agent("whisrs")
+            .build()
+            .context("failed to build HTTP client")?
+            .get(&url_clone)
+            .send()
+            .context("failed to connect to HuggingFace — check your internet connection")?;
+
+        if !response.status().is_success() {
+            anyhow::bail!(
+                "download failed: HTTP {} from {url_clone}",
+                response.status()
+            );
+        }
+
+        let total_size = response.content_length().unwrap_or(0);
+
+        let pb = indicatif::ProgressBar::new(total_size);
+        pb.set_style(
+            indicatif::ProgressStyle::with_template(
+                "  [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})",
+            )
+            .unwrap()
+            .progress_chars("=> "),
+        );
+
+        let mut file = fs::File::create(&dest_clone)
+            .with_context(|| format!("failed to create {}", dest_clone.display()))?;
+
+        let mut reader = std::io::BufReader::new(response);
+        let mut buf = [0u8; 8192];
+
+        loop {
+            let n = reader.read(&mut buf).context("download interrupted")?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n])
+                .context("failed to write model file")?;
+            pb.inc(n as u64);
+        }
+
+        pb.finish_and_clear();
+        Ok(())
+    })
+    .join()
+    .map_err(|_| anyhow::anyhow!("download thread panicked"))??;
+
+    println!("  {GREEN}Model saved to {}{RESET}", dest.display());
+    println!("  {DIM}No API key needed — everything runs on your machine.{RESET}");
+
+    Ok(())
 }
 
 /// Prompt for an API key using hidden input.
