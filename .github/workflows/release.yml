@@ -10,30 +10,28 @@ permissions:
 
 jobs:
   build:
-    name: Build static binary
+    name: Build release binary
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (stable + musl target)
+      - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools cmake clang libasound2-dev libxkbcommon-dev pkg-config
+          sudo apt-get install -y libasound2-dev libxkbcommon-dev pkg-config
 
-      - name: Build static binary
-        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: Build release binary (cloud backends)
+        run: cargo build --release --locked --no-default-features
 
       - name: Package binary
         run: |
           mkdir -p dist
-          cp target/x86_64-unknown-linux-musl/release/whisrs dist/
-          cp target/x86_64-unknown-linux-musl/release/whisrsd dist/
-          tar -czf whisrs-${{ github.ref_name }}-x86_64-linux-musl.tar.gz -C dist whisrs whisrsd
+          cp target/release/whisrs dist/
+          cp target/release/whisrsd dist/
+          tar -czf whisrs-${{ github.ref_name }}-x86_64-linux-gnu.tar.gz -C dist whisrs whisrsd
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
