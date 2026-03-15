@@ -11,8 +11,6 @@ use async_trait::async_trait;
 #[cfg(feature = "local-whisper")]
 use tracing::{debug, info, warn};
 
-#[cfg(feature = "local-whisper")]
-use super::dedup::DeduplicationTracker;
 use super::{TranscriptionBackend, TranscriptionConfig};
 #[cfg(feature = "local-whisper")]
 use crate::audio::AudioChunk;
@@ -90,12 +88,30 @@ fn i16_to_f32(samples: &[i16]) -> Vec<f32> {
         .collect()
 }
 
+/// Result of a windowed whisper inference, including text and segments.
+#[cfg(feature = "local-whisper")]
+struct InferenceResult {
+    /// Full text of all segments (used for batch mode).
+    full_text: String,
+    /// Only text from segments that start at or after `keep_after_cs`.
+    new_text: String,
+}
+
+/// Run whisper inference on an audio window.
+///
+/// - `keep_after_cs`: only include segments starting at or after this timestamp
+///   (in centiseconds). Use 0 to keep everything. This is the key to avoiding
+///   duplicates in the sliding window: the overlap region is transcribed for
+///   context but only segments in the "new" portion are returned.
+/// - `prompt`: previous transcription to condition this window for consistency.
 #[cfg(feature = "local-whisper")]
 fn run_whisper_inference(
     ctx: &whisper_rs::WhisperContext,
     audio: &[f32],
     language: &str,
-) -> anyhow::Result<String> {
+    keep_after_cs: i64,
+    prompt: Option<&str>,
+) -> anyhow::Result<InferenceResult> {
     use whisper_rs::{FullParams, SamplingStrategy};
 
     let mut state = ctx
@@ -107,6 +123,16 @@ fn run_whisper_inference(
     if language != "auto" {
         params.set_language(Some(language));
     }
+
+    // Feed previous transcription as prompt so whisper produces consistent
+    // output across overlapping windows.
+    if let Some(prompt) = prompt {
+        if !prompt.is_empty() {
+            params.set_initial_prompt(prompt);
+        }
+    }
+    // Allow whisper to use the prompt as context.
+    params.set_no_context(false);
 
     params.set_print_special(false);
     params.set_print_progress(false);
@@ -123,12 +149,23 @@ fn run_whisper_inference(
         .full(params, audio)
         .map_err(|e| anyhow::anyhow!("whisper inference failed: {e}"))?;
 
-    let mut text = String::new();
+    let mut full_text = String::new();
+    let mut new_text = String::new();
+
     for segment in state.as_iter() {
-        text.push_str(&format!("{}", segment));
+        let seg_text = format!("{}", segment);
+        full_text.push_str(&seg_text);
+
+        // Only keep segments whose start falls in the "new" portion of the window.
+        if segment.start_timestamp() >= keep_after_cs {
+            new_text.push_str(&seg_text);
+        }
     }
 
-    Ok(text.trim().to_string())
+    Ok(InferenceResult {
+        full_text: full_text.trim().to_string(),
+        new_text: new_text.trim().to_string(),
+    })
 }
 
 // --- Stub implementation when feature is disabled ---
@@ -176,8 +213,11 @@ impl TranscriptionBackend for LocalWhisperBackend {
         let ctx = Arc::clone(ctx);
         let language = config.language.clone();
 
-        tokio::task::spawn_blocking(move || run_whisper_inference(&ctx, &samples_f32, &language))
-            .await?
+        let result = tokio::task::spawn_blocking(move || {
+            run_whisper_inference(&ctx, &samples_f32, &language, 0, None)
+        })
+        .await??;
+        Ok(result.full_text)
     }
 
     async fn transcribe_stream(
@@ -192,9 +232,10 @@ impl TranscriptionBackend for LocalWhisperBackend {
             .ok_or_else(|| anyhow::anyhow!("whisper model not loaded from {}", self.model_path))?;
 
         let mut buffer: Vec<i16> = Vec::new();
-        let mut dedup = DeduplicationTracker::new();
         let mut next_process_at = INITIAL_WINDOW_SAMPLES;
         let mut last_processed_end: usize = 0;
+        // Previous transcription fed as prompt to the next window for consistency.
+        let mut prompt = String::new();
 
         while let Some(chunk) = audio_rx.recv().await {
             buffer.extend_from_slice(&chunk);
@@ -210,22 +251,42 @@ impl TranscriptionBackend for LocalWhisperBackend {
                 let window_start = window_end.saturating_sub(window_size);
                 let window = buffer[window_start..window_end].to_vec();
 
+                // How many seconds of this window overlap with already-transcribed audio.
+                // Whisper still processes the overlap for acoustic context, but we only
+                // keep segments whose timestamps fall in the new portion.
+                let overlap_samples = last_processed_end.saturating_sub(window_start);
+                let keep_after_cs = (overlap_samples as f64 / SAMPLE_RATE as f64 * 100.0) as i64;
+
                 // Skip silent windows.
                 if !crate::audio::silence::is_silent(&window, 0.005) {
                     let samples_f32 = i16_to_f32(&window);
                     let ctx_clone = Arc::clone(ctx);
                     let lang = config.language.clone();
+                    let prev_prompt = if prompt.is_empty() {
+                        None
+                    } else {
+                        Some(prompt.clone())
+                    };
 
                     match tokio::task::spawn_blocking(move || {
-                        run_whisper_inference(&ctx_clone, &samples_f32, &lang)
+                        run_whisper_inference(
+                            &ctx_clone,
+                            &samples_f32,
+                            &lang,
+                            keep_after_cs,
+                            prev_prompt.as_deref(),
+                        )
                     })
                     .await
                     {
-                        Ok(Ok(text)) => {
-                            let new_text = dedup.filter_text(&text);
-                            if !new_text.trim().is_empty() {
-                                debug!("streaming window produced: {:?}", new_text);
-                                text_tx.send(new_text).await.ok();
+                        Ok(Ok(result)) => {
+                            // Update prompt with full transcription for next window.
+                            if !result.full_text.is_empty() {
+                                prompt = result.full_text;
+                            }
+                            if !result.new_text.is_empty() {
+                                debug!("streaming window produced: {:?}", result.new_text);
+                                text_tx.send(result.new_text).await.ok();
                             }
                         }
                         Ok(Err(e)) => warn!("whisper window inference failed: {e}"),
@@ -246,27 +307,39 @@ impl TranscriptionBackend for LocalWhisperBackend {
         // Process remaining audio not covered by the last window.
         if buffer.len() > last_processed_end {
             let remaining_start = if buffer.len() - last_processed_end < SAMPLE_RATE {
-                // Less than 1 second of new audio — include context.
                 last_processed_end.saturating_sub(WINDOW_SAMPLES / 4)
             } else {
                 last_processed_end
             };
             let remaining = &buffer[remaining_start..];
 
+            let overlap_samples = last_processed_end.saturating_sub(remaining_start);
+            let keep_after_cs = (overlap_samples as f64 / SAMPLE_RATE as f64 * 100.0) as i64;
+
             if !remaining.is_empty() && !crate::audio::silence::is_silent(remaining, 0.005) {
                 let samples_f32 = i16_to_f32(remaining);
                 let ctx_clone = Arc::clone(ctx);
                 let lang = config.language.clone();
+                let prev_prompt = if prompt.is_empty() {
+                    None
+                } else {
+                    Some(prompt.clone())
+                };
 
                 match tokio::task::spawn_blocking(move || {
-                    run_whisper_inference(&ctx_clone, &samples_f32, &lang)
+                    run_whisper_inference(
+                        &ctx_clone,
+                        &samples_f32,
+                        &lang,
+                        keep_after_cs,
+                        prev_prompt.as_deref(),
+                    )
                 })
                 .await
                 {
-                    Ok(Ok(text)) => {
-                        let new_text = dedup.filter_text(&text);
-                        if !new_text.trim().is_empty() {
-                            text_tx.send(new_text).await.ok();
+                    Ok(Ok(result)) => {
+                        if !result.new_text.is_empty() {
+                            text_tx.send(result.new_text).await.ok();
                         }
                     }
                     Ok(Err(e)) => warn!("whisper final inference failed: {e}"),
