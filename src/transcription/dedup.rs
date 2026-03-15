@@ -1,10 +1,16 @@
-//! Timestamp-based deduplication for chunked streaming transcription.
+//! Deduplication for chunked streaming transcription.
 //!
-//! When sending audio in overlapping or consecutive chunks to a transcription
-//! API, the same words may appear in multiple responses. This module tracks
-//! the cumulative time offset and discards words that overlap with
-//! already-transcribed ranges. Falls back to n-gram text matching when
-//! timestamps are unavailable.
+//! Two strategies:
+//!
+//! 1. **Timestamp-based** (`filter_words`): for APIs like Groq that return
+//!    per-word timestamps. Tracks cumulative offset and discards words
+//!    whose adjusted start time falls in the already-transcribed range.
+//!
+//! 2. **Text-based anchor search** (`filter_text`): for local whisper sliding
+//!    window. Takes the last N words of previous output as an "anchor" and
+//!    searches for it anywhere in the new text. Everything after the anchor
+//!    is new text. Handles whisper's tendency to rephrase slightly between
+//!    overlapping windows.
 
 use tracing::debug;
 
@@ -16,7 +22,7 @@ pub struct DeduplicationTracker {
     transcribed_up_to: f64,
     /// Cumulative time offset added to each chunk's timestamps.
     cumulative_offset: f64,
-    /// Recent text we've already output (for n-gram fallback).
+    /// Previous window's full transcription (for anchor-based text dedup).
     recent_text: String,
     /// Maximum number of characters to keep in `recent_text` for matching.
     max_recent_chars: usize,
@@ -75,11 +81,11 @@ impl DeduplicationTracker {
         accepted
     }
 
-    /// Filter text using n-gram overlap detection (fallback when timestamps
-    /// are unavailable).
+    /// Filter text from a sliding window transcription.
     ///
-    /// Compares the beginning of `new_text` against the end of previously
-    /// output text and removes the overlapping prefix.
+    /// Finds where the previous output ends within the new transcription
+    /// (anchor search) and returns only the text after that point. Stores
+    /// the full new transcription as the reference for the next window.
     pub fn filter_text(&mut self, new_text: &str) -> String {
         let result = if self.recent_text.is_empty() {
             new_text.to_string()
@@ -87,8 +93,9 @@ impl DeduplicationTracker {
             remove_overlap(&self.recent_text, new_text)
         };
 
-        // Update recent text buffer.
-        self.recent_text.push_str(&result);
+        // Store the full new transcription as reference for the next window.
+        // Each window's complete output is what the next window will overlap with.
+        self.recent_text = new_text.to_string();
         if self.recent_text.len() > self.max_recent_chars {
             let trim_at = self.recent_text.len() - self.max_recent_chars;
             self.recent_text = self.recent_text[trim_at..].to_string();
@@ -104,11 +111,14 @@ impl Default for DeduplicationTracker {
     }
 }
 
-/// Remove overlapping prefix between the end of `previous` and the start of `new`.
+/// Remove overlapping text between the end of `previous` and `new`.
 ///
-/// Tries increasingly longer suffixes of `previous` and checks if they match
-/// the prefix of `new`. When a match is found (either exact or fuzzy),
-/// returns `new` with the overlapping prefix removed.
+/// Uses an anchor-search strategy: takes the last N words of `previous` and
+/// searches for that sequence anywhere in the first 75% of `new`. This handles
+/// whisper's tendency to slightly rephrase overlapping regions (word
+/// insertions/deletions at boundaries) that break strict prefix alignment.
+///
+/// Falls back to prefix alignment for short texts (< 3 words in previous).
 fn remove_overlap(previous: &str, new: &str) -> String {
     let prev_words: Vec<&str> = previous.split_whitespace().collect();
     let new_words: Vec<&str> = new.split_whitespace().collect();
@@ -117,18 +127,39 @@ fn remove_overlap(previous: &str, new: &str) -> String {
         return new.to_string();
     }
 
-    // Try matching n-gram overlaps (from longest to shortest).
-    // The sliding window approach can produce 15-20+ word overlaps,
-    // so we use a generous limit here.
-    let max_overlap = prev_words.len().min(new_words.len()).min(50);
+    // --- Strategy 1: Anchor search ---
+    // Take the last N words of previous and search for them in the new text.
+    // This handles whisper inserting/removing words at window boundaries.
+    let search_limit = (new_words.len() * 3 / 4).max(1);
+    let max_anchor = prev_words.len().min(8);
 
+    for anchor_len in (3..=max_anchor).rev() {
+        let anchor = &prev_words[prev_words.len() - anchor_len..];
+
+        for pos in 0..new_words.len() {
+            if pos + anchor_len > new_words.len() || pos >= search_limit {
+                break;
+            }
+            let candidate = &new_words[pos..pos + anchor_len];
+            if ngram_match(anchor, candidate) {
+                let new_start = pos + anchor_len;
+                if new_start >= new_words.len() {
+                    return String::new();
+                }
+                return new_words[new_start..].join(" ");
+            }
+        }
+    }
+
+    // --- Strategy 2: Prefix alignment (fallback for short texts) ---
+    // Check if the end of previous matches the start of new exactly.
+    let max_overlap = prev_words.len().min(new_words.len()).min(50);
     for overlap_len in (1..=max_overlap).rev() {
         let prev_suffix = &prev_words[prev_words.len() - overlap_len..];
         let new_prefix = &new_words[..overlap_len];
 
         if ngram_match(prev_suffix, new_prefix) {
-            // Found overlap — return new text with the overlapping prefix removed.
-            let remaining: Vec<&str> = new_words[overlap_len..].to_vec();
+            let remaining = &new_words[overlap_len..];
             if remaining.is_empty() {
                 return String::new();
             }
@@ -273,11 +304,24 @@ mod tests {
     }
 
     #[test]
-    fn text_dedup_removes_overlap() {
+    fn text_dedup_removes_overlap_prefix() {
+        // Simulates sliding window: window 2 re-transcribes window 1 + new text.
         let mut tracker = DeduplicationTracker::new();
-        tracker.filter_text("Hello world this");
-        let result = tracker.filter_text("world this is a test");
-        assert_eq!(result, "is a test");
+        tracker.filter_text("the quick brown fox");
+        let result = tracker.filter_text("the quick brown fox jumps over");
+        assert_eq!(result, "jumps over");
+    }
+
+    #[test]
+    fn text_dedup_handles_whisper_rephrase() {
+        // Whisper changes "to see" → "and see" in the overlap region.
+        // The anchor (last 3+ words of prev) should still find the match.
+        let mut tracker = DeduplicationTracker::new();
+        tracker.filter_text("trying to test it to see if it works");
+        // Window 2 rephrased slightly but the end of prev ("if it works") is intact.
+        let result =
+            tracker.filter_text("trying to test it and see if it works right now I am speaking");
+        assert_eq!(result, "right now I am speaking");
     }
 
     #[test]
@@ -291,10 +335,24 @@ mod tests {
     #[test]
     fn text_dedup_full_overlap() {
         let mut tracker = DeduplicationTracker::new();
-        tracker.filter_text("Hello world");
-        let result = tracker.filter_text("Hello world");
-        // The entire new text overlaps.
+        tracker.filter_text("Hello world foo bar baz");
+        let result = tracker.filter_text("Hello world foo bar baz");
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn text_dedup_sliding_window_sequence() {
+        // Simulate 3 overlapping windows.
+        let mut tracker = DeduplicationTracker::new();
+
+        let r1 = tracker.filter_text("A B C D E F");
+        assert_eq!(r1, "A B C D E F");
+
+        let r2 = tracker.filter_text("A B C D E F G H I");
+        assert_eq!(r2, "G H I");
+
+        let r3 = tracker.filter_text("D E F G H I J K L");
+        assert_eq!(r3, "J K L");
     }
 
     #[test]
@@ -328,20 +386,32 @@ mod tests {
     }
 
     #[test]
-    fn remove_overlap_basic() {
-        let result = remove_overlap("the quick brown", "brown fox jumps");
-        assert_eq!(result, "fox jumps");
+    fn remove_overlap_anchor_search() {
+        // Anchor "three four" from end of prev, found in new text.
+        let result = remove_overlap("one two three four", "two three four five six");
+        assert_eq!(result, "five six");
     }
 
     #[test]
-    fn remove_overlap_multi_word() {
-        let result = remove_overlap("one two three four", "three four five six");
-        assert_eq!(result, "five six");
+    fn remove_overlap_with_inserted_word() {
+        // Whisper inserted "really" but the end anchor still matches.
+        let result = remove_overlap(
+            "I think it is going to work",
+            "I really think it is going to work now",
+        );
+        assert_eq!(result, "now");
     }
 
     #[test]
     fn remove_overlap_none() {
         let result = remove_overlap("hello world", "completely different");
         assert_eq!(result, "completely different");
+    }
+
+    #[test]
+    fn remove_overlap_prefix_fallback() {
+        // Short prev — falls back to prefix alignment.
+        let result = remove_overlap("brown fox", "brown fox jumps");
+        assert_eq!(result, "jumps");
     }
 }
