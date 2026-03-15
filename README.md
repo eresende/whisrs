@@ -67,7 +67,18 @@ whisrs is noticeably faster at typing transcribed text:
 
 ## Installation
 
-### Arch Linux (AUR)
+### Quick install (any distro)
+
+```bash
+git clone https://github.com/y0sif/whisrs && cd whisrs && ./install.sh
+```
+
+The install script handles everything — detects your distro, installs system dependencies, builds the project, and runs interactive setup.
+
+After install, **press your hotkey** to start recording, **press again** to stop. Text appears at your cursor.
+
+<details>
+<summary><b>Arch Linux (AUR)</b></summary>
 
 ```bash
 yay -S whisrs-git
@@ -75,7 +86,10 @@ yay -S whisrs-git
 
 After install, run `whisrs setup` to configure your backend, API keys, permissions, and keybindings.
 
-### Cargo
+</details>
+
+<details>
+<summary><b>Cargo</b></summary>
 
 ```bash
 cargo install whisrs
@@ -83,7 +97,12 @@ cargo install whisrs
 
 Requires system dependencies: `alsa-lib`, `libxkbcommon`, `clang`, `cmake`.
 
-### Nix
+After install, run `whisrs setup`.
+
+</details>
+
+<details>
+<summary><b>Nix</b></summary>
 
 ```bash
 nix profile install github:y0sif/whisrs
@@ -94,13 +113,7 @@ Or add to your flake inputs:
 inputs.whisrs.url = "github:y0sif/whisrs";
 ```
 
-### Install script (any distro)
-
-```bash
-git clone https://github.com/y0sif/whisrs && cd whisrs && ./install.sh
-```
-
-The install script handles everything — installs system dependencies (detects your distro), builds the project, and runs interactive setup.
+</details>
 
 <details>
 <summary><b>Manual install (step by step)</b></summary>
@@ -173,8 +186,6 @@ bindsym $mod+w exec whisrs toggle
 ```
 
 </details>
-
-After install, run `whisrs setup` then **press your hotkey** to start recording, **press again** to stop. Text appears at your cursor.
 
 ---
 
@@ -359,7 +370,7 @@ whisrs is functional and usable for daily dictation on Hyprland. The core featur
 - [ ] Filler word removal
 - [ ] LLM command mode
 - [ ] System tray indicator
-- [x] Packaging (AUR, Nix, static binaries)
+- [x] Packaging ([AUR](https://aur.archlinux.org/packages/whisrs-git), Nix flake, crates.io)
 
 ---
 
