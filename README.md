@@ -65,26 +65,42 @@ whisrs is noticeably faster at typing transcribed text:
 
 ---
 
-## Quick Start
+## Installation
 
-### One-line install
+### Arch Linux (AUR)
+
+```bash
+yay -S whisrs-git
+```
+
+After install, run `whisrs setup` to configure your backend, API keys, permissions, and keybindings.
+
+### Cargo
+
+```bash
+cargo install whisrs
+```
+
+Requires system dependencies: `alsa-lib`, `libxkbcommon`, `clang`, `cmake`.
+
+### Nix
+
+```bash
+nix profile install github:y0sif/whisrs
+```
+
+Or add to your flake inputs:
+```nix
+inputs.whisrs.url = "github:y0sif/whisrs";
+```
+
+### Install script (any distro)
 
 ```bash
 git clone https://github.com/y0sif/whisrs && cd whisrs && ./install.sh
 ```
 
-The install script handles everything:
-1. Installs system dependencies (detects your distro)
-2. Builds the project (all backends included — cloud and local)
-3. Installs `whisrs` and `whisrsd` to `~/.cargo/bin/`
-4. Runs interactive setup — pick your backend, enter API key or download a local model
-5. Fixes `/dev/uinput` permissions (asks for sudo)
-6. Installs and enables the systemd service
-7. Adds a keybinding to your compositor (Hyprland/Sway auto-detected)
-
-After install, **press your hotkey** to start recording, **press again** to stop. Text appears at your cursor.
-
-Want to switch backends later? Just run `whisrs setup` again.
+The install script handles everything — installs system dependencies (detects your distro), builds the project, and runs interactive setup.
 
 <details>
 <summary><b>Manual install (step by step)</b></summary>
@@ -158,7 +174,7 @@ bindsym $mod+w exec whisrs toggle
 
 </details>
 
-Then: **press hotkey** to start recording, **press again** to stop and transcribe. Text appears at your cursor.
+After install, run `whisrs setup` then **press your hotkey** to start recording, **press again** to stop. Text appears at your cursor.
 
 ---
 
