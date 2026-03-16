@@ -290,21 +290,18 @@ impl TranscriptionBackend for OpenAIRealtimeBackend {
                     .ok();
             }
 
-            // Return the sink so the caller can close after transcription.
-            ws_sink
+            // Wait for the server to process remaining audio and send
+            // transcription events, then close the WebSocket. This ends
+            // the receive loop via the Close frame.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            debug!("closing WebSocket after post-silence delay");
+            ws_sink.send(tungstenite::Message::Close(None)).await.ok();
         });
 
         // Receive transcription events (with a timeout to avoid hanging forever).
-        // Use a long timeout initially, then a short one after transcription completes.
-        let long_timeout = std::time::Duration::from_secs(15);
-        let short_timeout = std::time::Duration::from_secs(2);
-        let mut got_completed = false;
-
-        while let Ok(Some(msg_result)) = tokio::time::timeout(
-            if got_completed { short_timeout } else { long_timeout },
-            ws_source.next(),
-        )
-        .await
+        let timeout_duration = std::time::Duration::from_secs(15);
+        while let Ok(Some(msg_result)) =
+            tokio::time::timeout(timeout_duration, ws_source.next()).await
         {
             match msg_result {
                 Ok(tungstenite::Message::Text(text)) => {
@@ -322,7 +319,6 @@ impl TranscriptionBackend for OpenAIRealtimeBackend {
                                 if let Some(transcript) = server_msg.transcript {
                                     debug!("realtime completed: {transcript}");
                                 }
-                                got_completed = true;
                             }
                             "error"
                             | "conversation.item.input_audio_transcription.failed" => {
@@ -366,10 +362,7 @@ impl TranscriptionBackend for OpenAIRealtimeBackend {
             }
         }
 
-        // Wait for the send task and close the WebSocket.
-        if let Ok(mut ws_sink) = send_task.await {
-            ws_sink.send(tungstenite::Message::Close(None)).await.ok();
-        }
+        send_task.await.ok();
         info!("OpenAI Realtime stream finished");
 
         Ok(())
