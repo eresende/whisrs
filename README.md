@@ -359,7 +359,7 @@ whisrs is functional and usable for daily dictation on Hyprland. The core featur
 - [x] Audio capture and WAV encoding
 - [x] Groq transcription backend
 - [x] OpenAI REST transcription backend
-- [x] OpenAI Realtime WebSocket backend (needs API key testing)
+- [x] OpenAI Realtime WebSocket backend (true streaming)
 - [x] Layout-aware keyboard injection (uinput + XKB)
 - [x] Wayland/X11 clipboard with save/restore
 - [x] Window tracking (Hyprland, Sway, X11, GNOME, KDE)
@@ -369,9 +369,8 @@ whisrs is functional and usable for daily dictation on Hyprland. The core featur
 - [x] Local whisper.cpp backend (sliding window streaming, prompt conditioning, model download)
 - [ ] Local Vosk backend (true streaming, tiny model)
 - [ ] Local Parakeet backend (NVIDIA, ultra-fast streaming)
-- [ ] OpenAI Realtime end-to-end testing
+- [x] Filler word removal
 - [ ] Multi-compositor testing
-- [ ] Filler word removal
 - [ ] LLM command mode
 - [ ] System tray indicator
 - [x] Packaging ([AUR](https://aur.archlinux.org/packages/whisrs-git), Nix flake, crates.io)

@@ -248,9 +248,7 @@ impl TranscriptionBackend for OpenAIRealtimeBackend {
         ws_sink
             .send(tungstenite::Message::Text(session_json.into()))
             .await?;
-        debug!(
-            "sent transcription_session.update for model={model}"
-        );
+        debug!("sent transcription_session.update for model={model}");
 
         // Spawn a task to send audio.
         let send_task = tokio::spawn(async move {
@@ -320,8 +318,7 @@ impl TranscriptionBackend for OpenAIRealtimeBackend {
                                     debug!("realtime completed: {transcript}");
                                 }
                             }
-                            "error"
-                            | "conversation.item.input_audio_transcription.failed" => {
+                            "error" | "conversation.item.input_audio_transcription.failed" => {
                                 let err_msg = server_msg
                                     .error
                                     .map(|e| e.message)
@@ -388,7 +385,10 @@ mod tests {
             json["session"]["input_audio_transcription"]["model"],
             "gpt-4o-mini-transcribe"
         );
-        assert_eq!(json["session"]["input_audio_transcription"]["language"], "en");
+        assert_eq!(
+            json["session"]["input_audio_transcription"]["language"],
+            "en"
+        );
         assert_eq!(json["session"]["turn_detection"]["type"], "server_vad");
     }
 

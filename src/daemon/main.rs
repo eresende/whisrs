@@ -687,9 +687,7 @@ async fn run_streaming_pipeline(
 
             // Collect this delta and any others that arrive within the batch window.
             let mut batch = first;
-            while let Ok(Some(more)) =
-                tokio::time::timeout(batch_delay, text_rx.recv()).await
-            {
+            while let Ok(Some(more)) = tokio::time::timeout(batch_delay, text_rx.recv()).await {
                 batch.push_str(&more);
             }
 
