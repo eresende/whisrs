@@ -57,6 +57,8 @@ enum SubCmd {
         #[arg(long)]
         clear: bool,
     },
+    /// Command mode: select text, speak an instruction, LLM rewrites it in place
+    Command,
 }
 
 /// Check if stdout is a TTY for color support.
@@ -108,6 +110,9 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 send_command(Command::Log { limit }).await?;
             }
+        }
+        SubCmd::Command => {
+            send_command(Command::CommandMode).await?;
         }
     }
 

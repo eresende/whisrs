@@ -4,6 +4,7 @@ pub mod audio;
 pub mod config;
 pub mod history;
 pub mod input;
+pub mod llm;
 pub mod post_processing;
 pub mod state;
 pub mod transcription;
@@ -31,6 +32,9 @@ pub enum Command {
     /// Clear all transcription history.
     #[serde(rename = "clear-history")]
     ClearHistory,
+    /// Start command mode: copy selection → record voice instruction → LLM rewrite → paste.
+    #[serde(rename = "command")]
+    CommandMode,
 }
 
 fn default_log_limit() -> usize {
@@ -86,6 +90,9 @@ pub struct Config {
     pub local_vosk: Option<LocalVoskConfig>,
     #[serde(default, rename = "local-parakeet")]
     pub local_parakeet: Option<LocalParakeetConfig>,
+    /// LLM configuration for command mode (text rewriting).
+    #[serde(default)]
+    pub llm: Option<llm::LlmConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +117,10 @@ pub struct GeneralConfig {
     /// Volume for audio feedback (0.0 to 1.0).
     #[serde(default = "default_audio_feedback_volume")]
     pub audio_feedback_volume: f32,
+    /// Custom vocabulary — domain-specific terms, names, acronyms.
+    /// Passed as a prompt hint to transcription backends to improve accuracy.
+    #[serde(default)]
+    pub vocabulary: Vec<String>,
 }
 
 impl Default for GeneralConfig {
@@ -123,6 +134,7 @@ impl Default for GeneralConfig {
             filler_words: Vec::new(),
             audio_feedback: false,
             audio_feedback_volume: default_audio_feedback_volume(),
+            vocabulary: Vec::new(),
         }
     }
 }
@@ -568,6 +580,7 @@ mod tests {
             local_whisper: None,
             local_vosk: None,
             local_parakeet: None,
+            llm: None,
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("Unknown backend"));
@@ -588,6 +601,7 @@ mod tests {
             local_whisper: None,
             local_vosk: None,
             local_parakeet: None,
+            llm: None,
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("no API key"));
@@ -609,6 +623,7 @@ mod tests {
             local_whisper: None,
             local_vosk: None,
             local_parakeet: None,
+            llm: None,
         };
         let result = config.validate();
         assert!(result.is_ok());
@@ -631,6 +646,7 @@ mod tests {
             local_whisper: None,
             local_vosk: None,
             local_parakeet: None,
+            llm: None,
         };
         let warnings = config.validate().unwrap();
         assert!(warnings

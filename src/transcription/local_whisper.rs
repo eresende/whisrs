@@ -155,9 +155,10 @@ impl TranscriptionBackend for LocalWhisperBackend {
 
         let ctx = Arc::clone(ctx);
         let language = config.language.clone();
+        let prompt = config.prompt.clone();
 
         tokio::task::spawn_blocking(move || {
-            run_whisper_inference(&ctx, &samples_f32, &language, None)
+            run_whisper_inference(&ctx, &samples_f32, &language, prompt.as_deref())
         })
         .await?
     }
@@ -178,7 +179,8 @@ impl TranscriptionBackend for LocalWhisperBackend {
         let mut next_process_at = INITIAL_WINDOW_SAMPLES;
         let mut last_processed_end: usize = 0;
         // Previous full transcription fed as prompt to the next window.
-        let mut prompt = String::new();
+        // Seed with vocabulary prompt if available.
+        let mut prompt = config.prompt.clone().unwrap_or_default();
 
         while let Some(chunk) = audio_rx.recv().await {
             buffer.extend_from_slice(&chunk);
@@ -298,6 +300,7 @@ mod tests {
         let config = TranscriptionConfig {
             language: "en".to_string(),
             model: "base.en".to_string(),
+            prompt: None,
         };
         let err = backend.transcribe(&[1, 2, 3], &config).await.unwrap_err();
         let msg = err.to_string();

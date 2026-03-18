@@ -45,6 +45,7 @@ mod tests {
         let config = TranscriptionConfig {
             language: "en".to_string(),
             model: "small-en-us".to_string(),
+            prompt: None,
         };
         let err = backend.transcribe(&[], &config).await.unwrap_err();
         assert!(err.to_string().contains("not yet implemented"));

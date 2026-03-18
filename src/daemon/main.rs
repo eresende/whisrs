@@ -10,6 +10,9 @@ use whisrs::audio::capture::AudioCaptureHandle;
 use whisrs::audio::feedback;
 use whisrs::audio::silence::AutoStopDetector;
 use whisrs::history::{self, HistoryEntry};
+use whisrs::input::clipboard::ClipboardOps;
+use whisrs::input::ClipboardHandler;
+use whisrs::llm;
 use whisrs::post_processing::filler::remove_filler_words;
 use whisrs::state::{Action, StateMachine};
 use whisrs::transcription::groq::GroqBackend;
@@ -98,6 +101,7 @@ fn load_config() -> (Config, Option<String>) {
                             local_whisper: None,
                             local_vosk: None,
                             local_parakeet: None,
+                            llm: None,
                         },
                         Some(msg),
                     );
@@ -118,6 +122,7 @@ fn load_config() -> (Config, Option<String>) {
                         local_whisper: None,
                         local_vosk: None,
                         local_parakeet: None,
+                        llm: None,
                     },
                     Some(msg),
                 );
@@ -138,6 +143,7 @@ fn load_config() -> (Config, Option<String>) {
             local_whisper: None,
             local_vosk: None,
             local_parakeet: None,
+            llm: None,
         },
         None,
     )
@@ -454,6 +460,7 @@ async fn handle_command(
                 message: format!("failed to clear history: {e}"),
             },
         },
+        Command::CommandMode => handle_command_mode(daemon_state, context).await,
     }
 }
 
@@ -508,6 +515,7 @@ async fn handle_toggle(
                 let config = TranscriptionConfig {
                     language: context.config.general.language.clone(),
                     model: get_model_for_backend(&context.config),
+                    prompt: vocabulary_prompt(&context.config.general.vocabulary),
                 };
 
                 let backend = Arc::clone(&context.transcription_backend);
@@ -911,6 +919,7 @@ async fn process_recording_batch(
     let config = TranscriptionConfig {
         language: context.config.general.language.clone(),
         model: get_model_for_backend(&context.config),
+        prompt: vocabulary_prompt(&context.config.general.vocabulary),
     };
 
     let text = match context
@@ -1053,6 +1062,19 @@ fn type_text_at_cursor(text: &str) -> Result<()> {
     Ok(())
 }
 
+/// Build a prompt string from custom vocabulary words.
+///
+/// Returns `None` if vocabulary is empty. The prompt is formatted as a
+/// comma-separated list which nudges the transcription model to recognise
+/// these terms.
+fn vocabulary_prompt(vocabulary: &[String]) -> Option<String> {
+    if vocabulary.is_empty() {
+        None
+    } else {
+        Some(vocabulary.join(", "))
+    }
+}
+
 /// Save a transcription to the history file.
 fn save_history_entry(text: &str, backend: &str, language: &str, duration_secs: f64) {
     let entry = HistoryEntry {
@@ -1065,6 +1087,279 @@ fn save_history_entry(text: &str, backend: &str, language: &str, duration_secs: 
     if let Err(e) = history::append_entry(&entry) {
         warn!("failed to save history entry: {e}");
     }
+}
+
+/// Command mode: copy selected text → record voice instruction → transcribe → LLM rewrite → paste.
+///
+/// This is a synchronous flow: the daemon copies the current selection,
+/// records audio, transcribes it to get the instruction, sends both to the LLM,
+/// and pastes the result back.
+async fn handle_command_mode(
+    daemon_state: Arc<Mutex<DaemonState>>,
+    context: Arc<DaemonContext>,
+) -> Response {
+    // Check we're idle.
+    {
+        let ds = daemon_state.lock().await;
+        if ds.state_machine.state() != State::Idle {
+            return Response::Error {
+                message: "cannot start command mode while recording or transcribing".to_string(),
+            };
+        }
+    }
+
+    // Get LLM config.
+    let llm_config = context.config.llm.clone().unwrap_or_default();
+
+    // Step 1: Copy the selected text via Ctrl+C and read clipboard.
+    info!("command mode: copying selected text");
+    let clipboard = ClipboardOps::detect();
+
+    // Save current clipboard content so we can restore it later.
+    let saved_clipboard = clipboard.get_text().unwrap_or_default();
+
+    // Simulate Ctrl+C to copy the selection.
+    if let Err(e) = tokio::task::spawn_blocking(simulate_copy).await {
+        return Response::Error {
+            message: format!("failed to copy selection: {e}"),
+        };
+    }
+
+    // Small delay for clipboard to update.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let selected_text = match clipboard.get_text() {
+        Ok(text) => text,
+        Err(e) => {
+            return Response::Error {
+                message: format!("failed to read clipboard: {e}"),
+            };
+        }
+    };
+
+    if selected_text.is_empty() || selected_text == saved_clipboard {
+        return Response::Error {
+            message: "no text selected — select some text before using command mode".to_string(),
+        };
+    }
+
+    info!(
+        "command mode: got {} chars of selected text",
+        selected_text.len()
+    );
+
+    // Step 2: Record voice instruction.
+    if context.notify {
+        send_notification("whisrs", "Command mode: speak your instruction...");
+    }
+    if context.config.general.audio_feedback {
+        feedback::play_start(context.config.general.audio_feedback_volume);
+    }
+
+    let mut capture = match AudioCaptureHandle::start() {
+        Ok(c) => c,
+        Err(e) => {
+            return Response::Error {
+                message: format!("failed to start audio capture: {e}"),
+            };
+        }
+    };
+
+    // Transition to recording.
+    {
+        let mut ds = daemon_state.lock().await;
+        if let Err(e) = ds.state_machine.transition(Action::Toggle) {
+            return Response::Error {
+                message: format!("state transition failed: {e}"),
+            };
+        }
+        ds.recording_started_at = Some(std::time::Instant::now());
+    }
+
+    // Listen for audio and auto-stop on silence.
+    let silence_timeout = context.config.general.silence_timeout_ms;
+    let mut auto_stop = AutoStopDetector::new(0.003, silence_timeout, 16_000);
+    let mut all_samples: Vec<i16> = Vec::new();
+
+    if let Some(mut rx) = capture.take_receiver() {
+        while let Some(chunk) = rx.recv().await {
+            all_samples.extend_from_slice(&chunk);
+            if auto_stop.feed(&chunk) {
+                info!("command mode: silence auto-stop");
+                break;
+            }
+        }
+    }
+
+    // Stop capture.
+    capture.stop();
+    tokio::task::spawn_blocking(move || drop(capture));
+
+    // Transition to transcribing.
+    {
+        let mut ds = daemon_state.lock().await;
+        let _ = ds.state_machine.transition(Action::Toggle);
+    }
+
+    if context.config.general.audio_feedback {
+        feedback::play_stop(context.config.general.audio_feedback_volume);
+    }
+
+    if all_samples.is_empty() {
+        let mut ds = daemon_state.lock().await;
+        let _ = ds.state_machine.transition(Action::TranscriptionDone);
+        return Response::Error {
+            message: "no audio captured for instruction".to_string(),
+        };
+    }
+
+    // Step 3: Transcribe the voice instruction.
+    if context.notify {
+        send_notification("whisrs", "Processing command...");
+    }
+
+    let wav_data = match whisrs::audio::capture::encode_wav(&all_samples) {
+        Ok(d) => d,
+        Err(e) => {
+            let mut ds = daemon_state.lock().await;
+            let _ = ds.state_machine.transition(Action::TranscriptionDone);
+            return Response::Error {
+                message: format!("failed to encode audio: {e}"),
+            };
+        }
+    };
+
+    let config = TranscriptionConfig {
+        language: context.config.general.language.clone(),
+        model: get_model_for_backend(&context.config),
+        prompt: None,
+    };
+
+    let instruction = match context
+        .transcription_backend
+        .transcribe(&wav_data, &config)
+        .await
+    {
+        Ok(text) => text,
+        Err(e) => {
+            let mut ds = daemon_state.lock().await;
+            let _ = ds.state_machine.transition(Action::TranscriptionDone);
+            return Response::Error {
+                message: format!("failed to transcribe instruction: {e}"),
+            };
+        }
+    };
+
+    if instruction.is_empty() {
+        let mut ds = daemon_state.lock().await;
+        let _ = ds.state_machine.transition(Action::TranscriptionDone);
+        return Response::Error {
+            message: "could not understand the instruction — try again".to_string(),
+        };
+    }
+
+    info!("command mode: instruction = {:?}", instruction);
+
+    // Step 4: Send to LLM.
+    let result = match llm::rewrite_text(&llm_config, &selected_text, &instruction).await {
+        Ok(text) => text,
+        Err(e) => {
+            let mut ds = daemon_state.lock().await;
+            let _ = ds.state_machine.transition(Action::TranscriptionDone);
+            return Response::Error {
+                message: format!("LLM rewrite failed: {e}"),
+            };
+        }
+    };
+
+    // Step 5: Paste the result back.
+    info!("command mode: pasting {} chars", result.len());
+
+    // Set clipboard to the result and simulate Ctrl+V.
+    if let Err(e) = clipboard.set_text(&result) {
+        let mut ds = daemon_state.lock().await;
+        let _ = ds.state_machine.transition(Action::TranscriptionDone);
+        return Response::Error {
+            message: format!("failed to set clipboard: {e}"),
+        };
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    if let Err(e) = tokio::task::spawn_blocking(simulate_paste).await {
+        warn!("failed to paste: {e}");
+    }
+
+    // Restore original clipboard after a delay.
+    let saved = saved_clipboard.clone();
+    let clipboard_restore = ClipboardOps::detect();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if let Err(e) = clipboard_restore.set_text(&saved) {
+            warn!("failed to restore clipboard: {e}");
+        }
+    });
+
+    if context.config.general.audio_feedback {
+        feedback::play_done(context.config.general.audio_feedback_volume);
+    }
+    if context.notify {
+        send_notification("whisrs", &format!("Command applied: {instruction}"));
+    }
+
+    // Transition back to idle.
+    let mut ds = daemon_state.lock().await;
+    let _ = ds.state_machine.transition(Action::TranscriptionDone);
+
+    Response::Ok {
+        state: ds.state_machine.state(),
+    }
+}
+
+/// Simulate a key combo (e.g. Ctrl+C, Ctrl+V) via a temporary uinput device.
+fn simulate_key_combo(modifier: evdev::Key, key: evdev::Key) -> anyhow::Result<()> {
+    use evdev::{AttributeSet, EventType, InputEvent, Key};
+    use std::thread;
+    use std::time::Duration;
+
+    let mut keys = AttributeSet::<Key>::new();
+    keys.insert(modifier);
+    keys.insert(key);
+
+    let mut device = evdev::uinput::VirtualDeviceBuilder::new()
+        .context("failed to create VirtualDeviceBuilder")?
+        .name("whisrs command")
+        .with_keys(&keys)
+        .context("failed to register key events")?
+        .build()
+        .context("failed to build uinput device")?;
+
+    thread::sleep(Duration::from_millis(200));
+
+    // Press modifier.
+    device.emit(&[InputEvent::new(EventType::KEY, modifier.code(), 1)])?;
+    thread::sleep(Duration::from_millis(2));
+    // Press key.
+    device.emit(&[InputEvent::new(EventType::KEY, key.code(), 1)])?;
+    thread::sleep(Duration::from_millis(2));
+    // Release key.
+    device.emit(&[InputEvent::new(EventType::KEY, key.code(), 0)])?;
+    thread::sleep(Duration::from_millis(2));
+    // Release modifier.
+    device.emit(&[InputEvent::new(EventType::KEY, modifier.code(), 0)])?;
+    thread::sleep(Duration::from_millis(2));
+
+    Ok(())
+}
+
+/// Simulate Ctrl+C (copy) via uinput.
+fn simulate_copy() -> anyhow::Result<()> {
+    simulate_key_combo(evdev::Key::KEY_LEFTCTRL, evdev::Key::KEY_C)
+}
+
+/// Simulate Ctrl+V (paste) via uinput.
+fn simulate_paste() -> anyhow::Result<()> {
+    simulate_key_combo(evdev::Key::KEY_LEFTCTRL, evdev::Key::KEY_V)
 }
 
 async fn handle_cancel(

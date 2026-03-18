@@ -41,6 +41,8 @@ pub struct TranscriptionConfig {
     pub language: String,
     /// Model identifier (backend-specific).
     pub model: String,
+    /// Optional prompt hint for the transcription model (vocabulary, context).
+    pub prompt: Option<String>,
 }
 
 /// Trait for transcription backends.

@@ -108,6 +108,9 @@ impl TranscriptionBackend for OpenAIRestBackend {
         if config.language != "auto" {
             form = form.text("language", config.language.clone());
         }
+        if let Some(prompt) = &config.prompt {
+            form = form.text("prompt", prompt.clone());
+        }
 
         let response = self
             .client
@@ -163,6 +166,7 @@ mod tests {
         let config = TranscriptionConfig {
             language: "en".to_string(),
             model: "gpt-4o-mini-transcribe".to_string(),
+            prompt: None,
         };
         let err = backend.transcribe(&[], &config).await.unwrap_err();
         assert!(err.to_string().contains("empty audio"));
@@ -174,6 +178,7 @@ mod tests {
         let config = TranscriptionConfig {
             language: "en".to_string(),
             model: "gpt-4o-mini-transcribe".to_string(),
+            prompt: None,
         };
         let huge = vec![0u8; MAX_FILE_SIZE + 1];
         let err = backend.transcribe(&huge, &config).await.unwrap_err();

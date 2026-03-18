@@ -111,6 +111,7 @@ pub fn run_setup() -> Result<()> {
             filler_words: Vec::new(),
             audio_feedback,
             audio_feedback_volume: 0.5,
+            vocabulary: Vec::new(),
         },
         audio: AudioConfig {
             device: "default".to_string(),
@@ -120,6 +121,7 @@ pub fn run_setup() -> Result<()> {
         local_whisper: local_whisper_config,
         local_vosk: None,
         local_parakeet: None,
+        llm: None,
     };
 
     let config_path = write_config(&config)?;

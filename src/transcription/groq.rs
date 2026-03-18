@@ -72,6 +72,9 @@ impl GroqBackend {
         if config.language != "auto" {
             form = form.text("language", config.language.clone());
         }
+        if let Some(prompt) = &config.prompt {
+            form = form.text("prompt", prompt.clone());
+        }
 
         let response = self
             .client
@@ -174,6 +177,9 @@ impl TranscriptionBackend for GroqBackend {
         // Only set language if not "auto" — letting the API auto-detect is the default.
         if config.language != "auto" {
             form = form.text("language", config.language.clone());
+        }
+        if let Some(prompt) = &config.prompt {
+            form = form.text("prompt", prompt.clone());
         }
 
         let response = self
@@ -411,6 +417,7 @@ mod tests {
         let config = TranscriptionConfig {
             language: "en".to_string(),
             model: "whisper-large-v3-turbo".to_string(),
+            prompt: None,
         };
         let err = backend.transcribe(&[], &config).await.unwrap_err();
         assert!(err.to_string().contains("empty audio"));
@@ -422,6 +429,7 @@ mod tests {
         let config = TranscriptionConfig {
             language: "en".to_string(),
             model: "whisper-large-v3-turbo".to_string(),
+            prompt: None,
         };
         let huge = vec![0u8; MAX_FILE_SIZE + 1];
         let err = backend.transcribe(&huge, &config).await.unwrap_err();
