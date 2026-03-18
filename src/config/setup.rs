@@ -415,17 +415,67 @@ fn prompt_api_key_with_existing(
     Ok(key)
 }
 
+/// Common languages with their ISO 639-1 codes.
+const LANGUAGE_CHOICES: &[(&str, &str)] = &[
+    ("en", "English"),
+    ("auto", "Auto-detect"),
+    ("es", "Spanish"),
+    ("fr", "French"),
+    ("de", "German"),
+    ("pt", "Portuguese"),
+    ("it", "Italian"),
+    ("nl", "Dutch"),
+    ("ja", "Japanese"),
+    ("zh", "Chinese"),
+    ("ko", "Korean"),
+    ("ar", "Arabic"),
+    ("hi", "Hindi"),
+    ("ru", "Russian"),
+    ("pl", "Polish"),
+    ("tr", "Turkish"),
+    ("sv", "Swedish"),
+    ("uk", "Ukrainian"),
+];
+
 /// Ask the user for their preferred language.
 fn select_language(existing: Option<&Config>) -> Result<String> {
     let default_lang = existing
         .map(|c| c.general.language.clone())
         .unwrap_or_else(|| "en".to_string());
-    let language: String = Input::new()
-        .with_prompt("Language (ISO 639-1 code, or \"auto\" for auto-detect)")
-        .default(default_lang)
-        .interact_text()
-        .context("failed to read language")?;
-    Ok(language)
+
+    // Build display items.
+    let mut items: Vec<String> = LANGUAGE_CHOICES
+        .iter()
+        .map(|(code, name)| format!("{name:<15} ({code})"))
+        .collect();
+    items.push("Other (enter ISO 639-1 code)".to_string());
+
+    // Find default index.
+    let default_idx = LANGUAGE_CHOICES
+        .iter()
+        .position(|(code, _)| *code == default_lang)
+        .unwrap_or(0);
+
+    let selection = Select::new()
+        .with_prompt("Select language")
+        .items(&items)
+        .default(default_idx)
+        .interact()
+        .context("failed to read language selection")?;
+
+    if selection < LANGUAGE_CHOICES.len() {
+        let (code, name) = LANGUAGE_CHOICES[selection];
+        println!("  {DIM}Selected: {name} ({code}){RESET}");
+        Ok(code.to_string())
+    } else {
+        // "Other" selected — prompt for manual code.
+        let code: String = Input::new()
+            .with_prompt("Language code (ISO 639-1, e.g. \"fi\", \"cs\", \"vi\")")
+            .default(default_lang)
+            .interact_text()
+            .context("failed to read language code")?;
+        Ok(code)
+    }
 }
 
 /// Attempt to open the default audio input device and report success/failure.
