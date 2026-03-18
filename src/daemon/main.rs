@@ -1119,10 +1119,18 @@ async fn handle_command_mode(
     let saved_clipboard = clipboard.get_text().unwrap_or_default();
 
     // Simulate Ctrl+C to copy the selection.
-    if let Err(e) = tokio::task::spawn_blocking(simulate_copy).await {
-        return Response::Error {
-            message: format!("failed to copy selection: {e}"),
-        };
+    match tokio::task::spawn_blocking(simulate_copy).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            return Response::Error {
+                message: format!("failed to copy selection: {e}"),
+            };
+        }
+        Err(e) => {
+            return Response::Error {
+                message: format!("copy task panicked: {e}"),
+            };
+        }
     }
 
     // Small delay for clipboard to update.
@@ -1286,8 +1294,10 @@ async fn handle_command_mode(
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    if let Err(e) = tokio::task::spawn_blocking(simulate_paste).await {
-        warn!("failed to paste: {e}");
+    match tokio::task::spawn_blocking(simulate_paste).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => warn!("failed to paste: {e}"),
+        Err(e) => warn!("paste task panicked: {e}"),
     }
 
     // Restore original clipboard after a delay.
