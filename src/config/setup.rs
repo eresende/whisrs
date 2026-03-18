@@ -1041,32 +1041,101 @@ fn configure_extras() -> Result<(bool, bool)> {
 
 /// LLM provider choices for command mode.
 const LLM_PROVIDER_CHOICES: &[&str] = &[
-    "OpenAI         (gpt-4o-mini, recommended)",
-    "Groq           (llama-3.3-70b, free)",
-    "Anthropic      (claude-sonnet-4-20250514)",
-    "OpenRouter     (any model, requires account)",
-    "Google Gemini  (gemini-2.0-flash)",
+    "OpenAI         (recommended)",
+    "Groq           (fast, free tier)",
+    "OpenRouter     (many models, free options)",
+    "Google Gemini  (generous free tier)",
     "Skip           (configure later in config.toml)",
 ];
 
-/// LLM provider: (api_url, default_model).
-const LLM_PROVIDERS: &[(&str, &str)] = &[
-    ("https://api.openai.com/v1/chat/completions", "gpt-4o-mini"),
+/// LLM provider API URLs.
+const LLM_PROVIDER_URLS: &[&str] = &[
+    "https://api.openai.com/v1/chat/completions",
+    "https://api.groq.com/openai/v1/chat/completions",
+    "https://openrouter.ai/api/v1/chat/completions",
+    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+];
+
+/// Model choices per provider: (model_id, display_label).
+const OPENAI_MODELS: &[(&str, &str)] = &[
     (
-        "https://api.groq.com/openai/v1/chat/completions",
+        "gpt-4o-mini",
+        "gpt-4o-mini             (cheap, great quality) <- recommended",
+    ),
+    (
+        "gpt-5-mini",
+        "gpt-5-mini              (newest, smarter, costs more)",
+    ),
+    (
+        "gpt-5.4-nano",
+        "gpt-5.4-nano            (cheapest, fastest, newest)",
+    ),
+    (
+        "gpt-5.4-mini",
+        "gpt-5.4-mini            (newest mini, best quality)",
+    ),
+    ("gpt-4o", "gpt-4o                  (powerful, costs more)"),
+];
+
+const GROQ_MODELS: &[(&str, &str)] = &[
+    (
+        "qwen-qwq-32b",
+        "qwen-qwq-32b           (fast, good quality) <- recommended",
+    ),
+    (
+        "deepseek-r1-distill-llama-70b",
+        "deepseek-r1-distill-70b (strong reasoning)",
+    ),
+    (
         "llama-3.3-70b-versatile",
+        "llama-3.3-70b           (versatile, general purpose)",
     ),
     (
-        "https://api.anthropic.com/v1/messages",
-        "claude-sonnet-4-20250514",
+        "deepseek-r1-distill-qwen-32b",
+        "deepseek-r1-distill-32b (fast reasoning)",
+    ),
+    ("qwen3-32b", "qwen3-32b               (good all-rounder)"),
+];
+
+const OPENROUTER_MODELS: &[(&str, &str)] = &[
+    (
+        "qwen/qwen3-32b:free",
+        "qwen3-32b               (free) <- recommended",
     ),
     (
-        "https://openrouter.ai/api/v1/chat/completions",
+        "deepseek/deepseek-r1-0528:free",
+        "deepseek-r1             (free, strong reasoning)",
+    ),
+    (
+        "google/gemini-2.5-flash-preview:free",
+        "gemini-2.5-flash        (free, fast)",
+    ),
+    (
         "openai/gpt-4o-mini",
+        "gpt-4o-mini             (paid, reliable)",
     ),
     (
-        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-        "gemini-2.0-flash",
+        "anthropic/claude-haiku-4-5",
+        "claude-haiku-4.5        (paid, fast)",
+    ),
+];
+
+const GEMINI_MODELS: &[(&str, &str)] = &[
+    (
+        "gemini-2.5-flash",
+        "gemini-2.5-flash        (fast, cheap) <- recommended",
+    ),
+    (
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3.1-flash-lite   (newest, cheapest)",
+    ),
+    (
+        "gemini-2.5-pro",
+        "gemini-2.5-pro          (best quality, costs more)",
+    ),
+    (
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-pro          (newest pro, preview)",
     ),
 ];
 
@@ -1084,24 +1153,26 @@ fn configure_llm() -> Result<Option<LlmConfig>> {
         .context("failed to read LLM provider selection")?;
 
     // "Skip" is the last option.
-    if selection >= LLM_PROVIDERS.len() {
+    if selection >= LLM_PROVIDER_URLS.len() {
         println!("  {DIM}Skipped — you can add [llm] to config.toml later{RESET}");
         return Ok(None);
     }
 
-    let (api_url, default_model) = LLM_PROVIDERS[selection];
+    let api_url = LLM_PROVIDER_URLS[selection];
     let provider_name = LLM_PROVIDER_CHOICES[selection]
         .split_whitespace()
         .next()
         .unwrap_or("LLM");
 
+    // Model selection.
+    let model = select_llm_model(selection)?;
+
     // API key.
     let hint = match selection {
         0 => "Get one at https://platform.openai.com/api-keys",
         1 => "Get one free at https://console.groq.com/keys",
-        2 => "Get one at https://console.anthropic.com/settings/keys",
-        3 => "Get one at https://openrouter.ai/settings/keys",
-        4 => "Get one at https://aistudio.google.com/apikey",
+        2 => "Get one at https://openrouter.ai/settings/keys",
+        3 => "Get one at https://aistudio.google.com/apikey",
         _ => "",
     };
     println!("  {DIM}{hint}{RESET}");
@@ -1114,13 +1185,6 @@ fn configure_llm() -> Result<Option<LlmConfig>> {
         println!("  {YELLOW}Warning: empty API key — command mode won't work until you set it in config.toml{RESET}");
     }
 
-    // Model (with default pre-filled).
-    let model: String = Input::new()
-        .with_prompt("Model")
-        .default(default_model.to_string())
-        .interact_text()
-        .context("failed to read model")?;
-
     println!("  {GREEN}Command mode configured: {provider_name} / {model}{RESET}");
 
     Ok(Some(LlmConfig {
@@ -1128,6 +1192,39 @@ fn configure_llm() -> Result<Option<LlmConfig>> {
         model,
         api_url: api_url.to_string(),
     }))
+}
+
+/// Show model selection menu for a given provider, with an "Other" option.
+fn select_llm_model(provider_idx: usize) -> Result<String> {
+    let models: &[(&str, &str)] = match provider_idx {
+        0 => OPENAI_MODELS,
+        1 => GROQ_MODELS,
+        2 => OPENROUTER_MODELS,
+        3 => GEMINI_MODELS,
+        _ => return Ok("gpt-4o-mini".to_string()),
+    };
+
+    let mut items: Vec<String> = models.iter().map(|(_, label)| label.to_string()).collect();
+    items.push("Other (enter model name manually)".to_string());
+
+    let selection = Select::new()
+        .with_prompt("Select a model")
+        .items(&items)
+        .default(0)
+        .interact()
+        .context("failed to read model selection")?;
+
+    if selection < models.len() {
+        Ok(models[selection].0.to_string())
+    } else {
+        let default = models[0].0;
+        let model: String = Input::new()
+            .with_prompt("Model name")
+            .default(default.to_string())
+            .interact_text()
+            .context("failed to read model name")?;
+        Ok(model)
+    }
 }
 
 /// Print the final success message.

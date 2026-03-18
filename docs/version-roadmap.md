@@ -39,3 +39,4 @@ Incremental feature releases building toward v1.5.
 - **Cross-compositor testing** — community/contributor effort
 - **Non-QWERTY layout testing** — later
 - **Demo GIF** — later
+- **Anthropic LLM support** — Anthropic uses a different API format (`/v1/messages` instead of `/v1/chat/completions`). Need to add an adapter in `llm.rs` to support the Messages API. Users can access Anthropic models via OpenRouter in the meantime.
