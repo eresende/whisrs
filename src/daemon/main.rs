@@ -25,6 +25,13 @@ use whisrs::transcription::{TranscriptionBackend, TranscriptionConfig};
 use whisrs::window::{self, WindowTracker};
 use whisrs::{encode_message, read_message, socket_path, Command, Config, Response, State};
 
+/// Context saved when command mode starts recording.
+struct CommandModeContext {
+    selected_text: String,
+    saved_clipboard: String,
+    llm_config: llm::LlmConfig,
+}
+
 /// Shared daemon state protected by a mutex.
 struct DaemonState {
     state_machine: StateMachine,
@@ -35,6 +42,8 @@ struct DaemonState {
     streaming_task: Option<tokio::task::JoinHandle<Result<String>>>,
     /// When recording started (for duration tracking).
     recording_started_at: Option<std::time::Instant>,
+    /// Active command mode context (set when command mode is recording).
+    command_mode: Option<CommandModeContext>,
 }
 
 impl DaemonState {
@@ -45,6 +54,7 @@ impl DaemonState {
             recording_window_id: None,
             streaming_task: None,
             recording_started_at: None,
+            command_mode: None,
         }
     }
 }
@@ -1089,25 +1099,57 @@ fn save_history_entry(text: &str, backend: &str, language: &str, duration_secs: 
     }
 }
 
-/// Command mode: copy selected text → record voice instruction → transcribe → LLM rewrite → paste.
-///
-/// This is a synchronous flow: the daemon copies the current selection,
-/// records audio, transcribes it to get the instruction, sends both to the LLM,
-/// and pastes the result back.
+/// Command mode toggle: first call copies selection and starts recording,
+/// second call stops recording and kicks off transcription → LLM → paste.
+/// Also auto-stops on silence.
 async fn handle_command_mode(
     daemon_state: Arc<Mutex<DaemonState>>,
     context: Arc<DaemonContext>,
 ) -> Response {
-    // Check we're idle.
-    {
+    let current_state = {
         let ds = daemon_state.lock().await;
-        if ds.state_machine.state() != State::Idle {
-            return Response::Error {
-                message: "cannot start command mode while recording or transcribing".to_string(),
-            };
-        }
-    }
+        ds.state_machine.state()
+    };
 
+    match current_state {
+        State::Recording => {
+            // Second press: check if we're in command mode recording.
+            let is_command_mode = {
+                let ds = daemon_state.lock().await;
+                ds.command_mode.is_some()
+            };
+            if !is_command_mode {
+                return Response::Error {
+                    message: "recording is active but not in command mode — use toggle or cancel"
+                        .to_string(),
+                };
+            }
+            // Stop recording — the background task will detect the channel close.
+            let mut ds = daemon_state.lock().await;
+            if let Some(mut capture) = ds.audio_capture.take() {
+                capture.stop();
+                tokio::task::spawn_blocking(move || drop(capture));
+            }
+            info!("command mode: manual stop");
+            Response::Ok {
+                state: State::Recording,
+            }
+        }
+        State::Idle => {
+            // First press: copy selection and start recording.
+            command_mode_start(daemon_state, context).await
+        }
+        State::Transcribing => Response::Error {
+            message: "cannot start command mode while transcribing".to_string(),
+        },
+    }
+}
+
+/// Command mode first press: copy selection, start recording, spawn background processor.
+async fn command_mode_start(
+    daemon_state: Arc<Mutex<DaemonState>>,
+    context: Arc<DaemonContext>,
+) -> Response {
     // Get LLM config.
     let llm_config = context.config.llm.clone().unwrap_or_default();
 
@@ -1156,10 +1198,7 @@ async fn handle_command_mode(
         selected_text.len()
     );
 
-    // Step 2: Record voice instruction.
-    if context.notify {
-        send_notification("whisrs", "Command mode: speak your instruction...");
-    }
+    // Step 2: Start recording voice instruction.
     if context.config.general.audio_feedback {
         feedback::play_start(context.config.general.audio_feedback_volume);
     }
@@ -1173,7 +1212,9 @@ async fn handle_command_mode(
         }
     };
 
-    // Transition to recording.
+    let audio_rx = capture.take_receiver();
+
+    // Store state.
     {
         let mut ds = daemon_state.lock().await;
         if let Err(e) = ds.state_machine.transition(Action::Toggle) {
@@ -1181,27 +1222,76 @@ async fn handle_command_mode(
                 message: format!("state transition failed: {e}"),
             };
         }
+        ds.audio_capture = Some(capture);
         ds.recording_started_at = Some(std::time::Instant::now());
+        ds.command_mode = Some(CommandModeContext {
+            selected_text,
+            saved_clipboard,
+            llm_config,
+        });
     }
 
-    // Listen for audio and auto-stop on silence.
+    if context.notify {
+        send_notification(
+            "whisrs",
+            "Command mode: speak your instruction... (press again to stop)",
+        );
+    }
+
+    // Spawn background task: collect audio (with auto-stop), then process.
+    let ds_ref = Arc::clone(&daemon_state);
+    let ctx = Arc::clone(&context);
+    tokio::spawn(async move {
+        command_mode_background(audio_rx, ds_ref, ctx).await;
+    });
+
+    Response::Ok {
+        state: State::Recording,
+    }
+}
+
+/// Background task: collects audio until channel closes (manual stop or auto-stop),
+/// then transcribes the instruction, sends to LLM, and pastes the result.
+async fn command_mode_background(
+    audio_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Vec<i16>>>,
+    daemon_state: Arc<Mutex<DaemonState>>,
+    context: Arc<DaemonContext>,
+) {
     let silence_timeout = context.config.general.silence_timeout_ms;
     let mut auto_stop = AutoStopDetector::new(0.003, silence_timeout, 16_000);
     let mut all_samples: Vec<i16> = Vec::new();
 
-    if let Some(mut rx) = capture.take_receiver() {
+    // Collect audio until silence auto-stop or channel close (manual stop).
+    if let Some(mut rx) = audio_rx {
         while let Some(chunk) = rx.recv().await {
             all_samples.extend_from_slice(&chunk);
             if auto_stop.feed(&chunk) {
                 info!("command mode: silence auto-stop");
+                // Stop capture.
+                let mut ds = daemon_state.lock().await;
+                if let Some(mut capture) = ds.audio_capture.take() {
+                    capture.stop();
+                    tokio::task::spawn_blocking(move || drop(capture));
+                }
                 break;
             }
         }
     }
 
-    // Stop capture.
-    capture.stop();
-    tokio::task::spawn_blocking(move || drop(capture));
+    // Take command mode context.
+    let cmd_ctx = {
+        let mut ds = daemon_state.lock().await;
+        ds.audio_capture.take(); // ensure capture is dropped
+        ds.command_mode.take()
+    };
+
+    let Some(cmd_ctx) = cmd_ctx else {
+        warn!("command mode: context missing, aborting");
+        let mut ds = daemon_state.lock().await;
+        let _ = ds.state_machine.transition(Action::Toggle);
+        let _ = ds.state_machine.transition(Action::TranscriptionDone);
+        return;
+    };
 
     // Transition to transcribing.
     {
@@ -1214,26 +1304,26 @@ async fn handle_command_mode(
     }
 
     if all_samples.is_empty() {
+        if context.notify {
+            send_notification("whisrs", "Command mode: no audio captured");
+        }
         let mut ds = daemon_state.lock().await;
         let _ = ds.state_machine.transition(Action::TranscriptionDone);
-        return Response::Error {
-            message: "no audio captured for instruction".to_string(),
-        };
+        return;
     }
 
-    // Step 3: Transcribe the voice instruction.
     if context.notify {
         send_notification("whisrs", "Processing command...");
     }
 
+    // Encode and transcribe.
     let wav_data = match whisrs::audio::capture::encode_wav(&all_samples) {
         Ok(d) => d,
         Err(e) => {
+            error!("command mode: failed to encode audio: {e}");
             let mut ds = daemon_state.lock().await;
             let _ = ds.state_machine.transition(Action::TranscriptionDone);
-            return Response::Error {
-                message: format!("failed to encode audio: {e}"),
-            };
+            return;
         }
     };
 
@@ -1250,46 +1340,51 @@ async fn handle_command_mode(
     {
         Ok(text) => text,
         Err(e) => {
+            error!("command mode: transcription failed: {e}");
+            if context.notify {
+                send_notification("whisrs", &format!("Command failed: {e}"));
+            }
             let mut ds = daemon_state.lock().await;
             let _ = ds.state_machine.transition(Action::TranscriptionDone);
-            return Response::Error {
-                message: format!("failed to transcribe instruction: {e}"),
-            };
+            return;
         }
     };
 
     if instruction.is_empty() {
+        if context.notify {
+            send_notification("whisrs", "Could not understand instruction — try again");
+        }
         let mut ds = daemon_state.lock().await;
         let _ = ds.state_machine.transition(Action::TranscriptionDone);
-        return Response::Error {
-            message: "could not understand the instruction — try again".to_string(),
-        };
+        return;
     }
 
     info!("command mode: instruction = {:?}", instruction);
 
-    // Step 4: Send to LLM.
-    let result = match llm::rewrite_text(&llm_config, &selected_text, &instruction).await {
-        Ok(text) => text,
-        Err(e) => {
-            let mut ds = daemon_state.lock().await;
-            let _ = ds.state_machine.transition(Action::TranscriptionDone);
-            return Response::Error {
-                message: format!("LLM rewrite failed: {e}"),
-            };
-        }
-    };
+    // Send to LLM.
+    let result =
+        match llm::rewrite_text(&cmd_ctx.llm_config, &cmd_ctx.selected_text, &instruction).await {
+            Ok(text) => text,
+            Err(e) => {
+                error!("command mode: LLM failed: {e}");
+                if context.notify {
+                    send_notification("whisrs", &format!("Command failed: {e}"));
+                }
+                let mut ds = daemon_state.lock().await;
+                let _ = ds.state_machine.transition(Action::TranscriptionDone);
+                return;
+            }
+        };
 
-    // Step 5: Paste the result back.
+    // Paste the result.
     info!("command mode: pasting {} chars", result.len());
+    let clipboard = ClipboardOps::detect();
 
-    // Set clipboard to the result and simulate Ctrl+V.
     if let Err(e) = clipboard.set_text(&result) {
+        error!("command mode: failed to set clipboard: {e}");
         let mut ds = daemon_state.lock().await;
         let _ = ds.state_machine.transition(Action::TranscriptionDone);
-        return Response::Error {
-            message: format!("failed to set clipboard: {e}"),
-        };
+        return;
     }
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1301,7 +1396,7 @@ async fn handle_command_mode(
     }
 
     // Restore original clipboard after a delay.
-    let saved = saved_clipboard.clone();
+    let saved = cmd_ctx.saved_clipboard.clone();
     let clipboard_restore = ClipboardOps::detect();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -1320,10 +1415,6 @@ async fn handle_command_mode(
     // Transition back to idle.
     let mut ds = daemon_state.lock().await;
     let _ = ds.state_machine.transition(Action::TranscriptionDone);
-
-    Response::Ok {
-        state: ds.state_machine.state(),
-    }
 }
 
 /// Simulate a key combo (e.g. Ctrl+C, Ctrl+V) via a temporary uinput device.
