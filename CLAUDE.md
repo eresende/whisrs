@@ -151,7 +151,7 @@ When a feature or set of changes warrants a version bump:
 2. **Always include `Cargo.lock`** in the version bump commit
 3. **Run all CI checks** locally (see above)
 4. **Commit** and **push**
-5. **Publish to crates.io**: `cargo publish`
+5. **Publish to crates.io**: Always run `cargo publish` after pushing a version bump — do not skip this step
 6. **Update AUR** package locally and push to AUR
 
 ## Packaging
