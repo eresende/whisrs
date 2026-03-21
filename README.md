@@ -159,6 +159,8 @@ remove_filler_words = true  # strip "um", "uh", "you know", etc.
 filler_words = []           # custom list (empty = use built-in defaults)
 audio_feedback = true       # play tones on record start/stop/done
 audio_feedback_volume = 0.5 # 0.0 to 1.0
+vocabulary = ["whisrs", "Hyprland"]  # custom terms for better transcription accuracy
+tray = true                 # system tray icon (requires SNI host like waybar)
 
 [audio]
 device = "default"
@@ -173,6 +175,18 @@ model = "gpt-4o-mini-transcribe"
 
 [local-whisper]
 model_path = "~/.local/share/whisrs/models/ggml-base.en.bin"
+
+# Command mode: LLM for voice-driven text rewriting
+[llm]
+api_key = "sk-..."
+model = "gpt-4o-mini"
+api_url = "https://api.openai.com/v1/chat/completions"
+
+# Built-in global hotkeys (optional, works without WM keybinds)
+[hotkeys]
+toggle = "Super+Shift+W"
+cancel = "Super+Shift+D"
+command = "Super+Shift+G"
 ```
 
 Environment variable overrides: `WHISRS_GROQ_API_KEY`, `WHISRS_OPENAI_API_KEY`
@@ -186,6 +200,10 @@ whisrs setup     # Interactive onboarding
 whisrs toggle    # Start/stop recording
 whisrs cancel    # Cancel recording, discard audio
 whisrs status    # Query daemon state
+whisrs command   # Command mode: select text + speak instruction → LLM rewrite
+whisrs log       # Show recent transcription history
+whisrs log -n 5  # Show last 5 entries
+whisrs log --clear  # Clear all history
 ```
 
 ---
@@ -218,13 +236,17 @@ whisrs is functional and usable for daily dictation. The core features work:
 - [x] Wayland/X11 clipboard with save/restore
 - [x] Window tracking (Hyprland, Sway, X11, GNOME, KDE)
 - [x] Desktop notifications and audio feedback
-- [x] Interactive setup
+- [x] Interactive setup with LLM provider selection
 - [x] Filler word removal
+- [x] Transcription history (`whisrs log`)
+- [x] Multi-language support (18 languages + auto-detect)
+- [x] Custom vocabulary for improved transcription accuracy
+- [x] LLM command mode (select text + voice instruction → rewrite)
+- [x] System tray indicator (idle/recording/transcribing)
+- [x] Configurable global hotkeys via evdev
 - [x] Packaging ([AUR](https://aur.archlinux.org/packages/whisrs-git), Nix flake, crates.io)
 - [ ] Local Vosk backend
 - [ ] Local Parakeet backend (NVIDIA)
-- [ ] LLM command mode
-- [ ] System tray indicator
 
 ---
 
