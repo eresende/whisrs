@@ -425,6 +425,26 @@ async fn main() -> Result<()> {
         std::process::exit(0);
     });
 
+    // Start global hotkey listener if configured.
+    if let Some(ref hk_config) = context.config.hotkeys {
+        let (hotkey_tx, mut hotkey_rx) = tokio::sync::mpsc::channel::<Command>(16);
+        whisrs::hotkey::start_hotkey_listener(hk_config, hotkey_tx).await;
+
+        // Process hotkey commands in the background.
+        let hk_state = Arc::clone(&daemon_state);
+        let hk_ctx = Arc::clone(&context);
+        tokio::spawn(async move {
+            while let Some(cmd) = hotkey_rx.recv().await {
+                info!("hotkey command: {cmd:?}");
+                let _response =
+                    handle_command(cmd, Arc::clone(&hk_state), Arc::clone(&hk_ctx)).await;
+                // Broadcast state for tray.
+                let current = hk_state.lock().await.state_machine.state();
+                let _ = hk_ctx.state_tx.send(current);
+            }
+        });
+    }
+
     loop {
         let (stream, _addr) = listener.accept().await?;
         let state = Arc::clone(&daemon_state);
