@@ -13,9 +13,9 @@
 [![Crates.io](https://img.shields.io/crates/v/whisrs)](https://crates.io/crates/whisrs)
 [![docs.rs](https://img.shields.io/docsrs/whisrs)](https://docs.rs/whisrs)
 
-**Linux-first voice-to-text dictation, written in Rust.**
+**Linux-first voice-to-text dictation tool, written in Rust.**
 
-Press a hotkey, speak, and your words appear at the cursor. Any app, any window manager, any desktop environment. Fast, private, open source.
+Speech-to-text for Wayland, X11, Hyprland, Sway, GNOME, and KDE. Press a hotkey, speak, and your words appear at the cursor. Works with any app, any window manager, any desktop environment. Supports cloud transcription (Groq, OpenAI) and fully offline local transcription via whisper.cpp. Fast, private, open source.
 
 ---
 
@@ -243,6 +243,12 @@ The biggest way to help right now:
 3. **Bug reports** — if text goes to the wrong window, characters get dropped, or audio doesn't capture, open an issue.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and project structure.
+
+---
+
+## [How whisrs Compares](docs/comparison.md)
+
+## [FAQ](docs/faq.md)
 
 ---
 
