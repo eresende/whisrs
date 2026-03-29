@@ -30,6 +30,12 @@ Dictation tools like Wispr Flow and Superwhisper are not available on Linux. [xh
 ### Quick install (any distro)
 
 ```bash
+curl -sSL https://y0sif.github.io/whisrs/install.sh | bash
+```
+
+Or clone and run locally:
+
+```bash
 git clone https://github.com/y0sif/whisrs && cd whisrs && ./install.sh
 ```
 

@@ -1661,13 +1661,21 @@ fn simulate_terminal_clear_and_paste() -> anyhow::Result<()> {
     // Ctrl+Shift+V — paste.
     device.emit(&[InputEvent::new(EventType::KEY, Key::KEY_LEFTCTRL.code(), 1)])?;
     thread::sleep(Duration::from_millis(2));
-    device.emit(&[InputEvent::new(EventType::KEY, Key::KEY_LEFTSHIFT.code(), 1)])?;
+    device.emit(&[InputEvent::new(
+        EventType::KEY,
+        Key::KEY_LEFTSHIFT.code(),
+        1,
+    )])?;
     thread::sleep(Duration::from_millis(2));
     device.emit(&[InputEvent::new(EventType::KEY, Key::KEY_V.code(), 1)])?;
     thread::sleep(Duration::from_millis(2));
     device.emit(&[InputEvent::new(EventType::KEY, Key::KEY_V.code(), 0)])?;
     thread::sleep(Duration::from_millis(2));
-    device.emit(&[InputEvent::new(EventType::KEY, Key::KEY_LEFTSHIFT.code(), 0)])?;
+    device.emit(&[InputEvent::new(
+        EventType::KEY,
+        Key::KEY_LEFTSHIFT.code(),
+        0,
+    )])?;
     thread::sleep(Duration::from_millis(2));
     device.emit(&[InputEvent::new(EventType::KEY, Key::KEY_LEFTCTRL.code(), 0)])?;
     thread::sleep(Duration::from_millis(2));
