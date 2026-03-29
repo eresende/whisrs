@@ -46,6 +46,13 @@ impl ClipboardHandler for ClipboardOps {
             ClipboardOps::X11 => x11_set_text(text),
         }
     }
+
+    fn get_primary_selection(&self) -> anyhow::Result<String> {
+        match self {
+            ClipboardOps::Wayland => wayland_get_primary(),
+            ClipboardOps::X11 => x11_get_primary(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +72,23 @@ fn wayland_get_text() -> anyhow::Result<String> {
             return Ok(String::new());
         }
         anyhow::bail!("wl-paste failed: {stderr}");
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn wayland_get_primary() -> anyhow::Result<String> {
+    let output = Command::new("wl-paste")
+        .args(["--no-newline", "--primary"])
+        .output()
+        .context("failed to run wl-paste --primary — is wl-clipboard installed?")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("no suitable type") || stderr.contains("nothing is copied") {
+            return Ok(String::new());
+        }
+        anyhow::bail!("wl-paste --primary failed: {stderr}");
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -101,6 +125,16 @@ fn x11_get_text() -> anyhow::Result<String> {
     clipboard
         .get_text()
         .context("failed to get text from X11 clipboard")
+}
+
+fn x11_get_primary() -> anyhow::Result<String> {
+    use arboard::GetExtLinux;
+    let mut clipboard = arboard::Clipboard::new().context("failed to open X11 clipboard")?;
+    clipboard
+        .get()
+        .clipboard(arboard::LinuxClipboardKind::Primary)
+        .text()
+        .context("failed to get text from X11 primary selection")
 }
 
 fn x11_set_text(text: &str) -> anyhow::Result<()> {
