@@ -89,10 +89,7 @@ pub async fn start_hotkey_listener(config: &HotkeyConfig, cmd_tx: mpsc::Sender<C
         match enumerate_keyboards() {
             Ok(d) if !d.is_empty() => {
                 if attempt > 1 {
-                    info!(
-                        "found {} keyboard device(s) (attempt {attempt})",
-                        d.len()
-                    );
+                    info!("found {} keyboard device(s) (attempt {attempt})", d.len());
                 }
                 devices = d;
                 break;
