@@ -228,4 +228,72 @@ mod tests {
     fn filler_with_comma() {
         assert_eq!(remove_filler_words("like, it was good", &[]), "it was good");
     }
+
+    // --- Non-ASCII language tests ---
+
+    #[test]
+    fn cyrillic_no_fillers() {
+        let text = "Привет мир, как дела?";
+        assert_eq!(remove_filler_words(text, &[]), text);
+    }
+
+    #[test]
+    fn cyrillic_with_english_filler() {
+        // Transcription APIs sometimes mix English fillers into non-English text.
+        assert_eq!(remove_filler_words("um Привет мир", &[]), "Привет мир");
+    }
+
+    #[test]
+    fn cyrillic_stutter_removal() {
+        assert_eq!(remove_filler_words("я я пошёл домой", &[]), "я пошёл домой");
+    }
+
+    #[test]
+    fn arabic_no_fillers() {
+        let text = "مرحبا بالعالم";
+        assert_eq!(remove_filler_words(text, &[]), text);
+    }
+
+    #[test]
+    fn arabic_stutter_removal() {
+        assert_eq!(remove_filler_words("هذا هذا اختبار", &[]), "هذا اختبار");
+    }
+
+    #[test]
+    fn cjk_no_fillers() {
+        let text = "你好世界";
+        assert_eq!(remove_filler_words(text, &[]), text);
+    }
+
+    #[test]
+    fn japanese_no_fillers() {
+        let text = "こんにちは世界";
+        assert_eq!(remove_filler_words(text, &[]), text);
+    }
+
+    #[test]
+    fn korean_no_fillers() {
+        let text = "안녕하세요 세계";
+        assert_eq!(remove_filler_words(text, &[]), text);
+    }
+
+    #[test]
+    fn mixed_script_with_filler() {
+        assert_eq!(
+            remove_filler_words("basically Привет, 世界 uh okay", &[]),
+            "Привет, 世界 okay"
+        );
+    }
+
+    #[test]
+    fn custom_cyrillic_filler() {
+        let custom = vec!["ну".to_string(), "типа".to_string()];
+        assert_eq!(remove_filler_words("ну типа я пошёл", &custom), "я пошёл");
+    }
+
+    #[test]
+    fn emoji_in_text() {
+        let text = "um 😀 that was basically 🎉 great";
+        assert_eq!(remove_filler_words(text, &[]), "😀 that was 🎉 great");
+    }
 }
