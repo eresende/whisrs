@@ -276,90 +276,218 @@ mod tests {
         }
     }
 
+    /// Helper: assert a character maps to the expected evdev keycode and shift state.
+    fn assert_key(
+        km: &XkbKeymap,
+        ch: char,
+        expected_keycode: u16,
+        expected_shift: bool,
+        label: &str,
+    ) {
+        let mapping = km
+            .lookup(ch)
+            .unwrap_or_else(|| panic!("'{ch}' should be in {label} keymap"));
+        assert_eq!(
+            mapping.keycode, expected_keycode,
+            "'{ch}' should be at evdev {expected_keycode} on {label}, got {}",
+            mapping.keycode
+        );
+        assert_eq!(
+            mapping.shift, expected_shift,
+            "'{ch}' shift should be {expected_shift} on {label}"
+        );
+    }
+
+    // --- QWERTZ family (y/z swapped) ---
+
     #[test]
-    fn german_layout_yz_swap() {
-        // On QWERTZ (de), 'z' and 'y' are in swapped positions compared to US.
-        let km = XkbKeymap::from_layout(&layout("de", ""));
-        if let Ok(km) = km {
-            let y_mapping = km.lookup('y').expect("'y' should be in de keymap");
-            let z_mapping = km.lookup('z').expect("'z' should be in de keymap");
-            // On QWERTZ: 'z' is where 'y' is on QWERTY (evdev 21),
-            //            'y' is where 'z' is on QWERTY (evdev 44).
-            assert_eq!(
-                z_mapping.keycode, 21,
-                "'z' should be at evdev keycode 21 on QWERTZ"
-            );
-            assert_eq!(
-                y_mapping.keycode, 44,
-                "'y' should be at evdev keycode 44 on QWERTZ"
-            );
-        }
+    fn german_layout() {
+        let km = XkbKeymap::from_layout(&layout("de", "")).unwrap();
+        assert_key(&km, 'z', 21, false, "German");
+        assert_key(&km, 'y', 44, false, "German");
     }
 
     #[test]
-    fn french_azerty_layout() {
-        // On AZERTY (fr), 'a'/'q' and 'z'/'w' are swapped compared to QWERTY.
-        let km = XkbKeymap::from_layout(&layout("fr", ""));
-        if let Ok(km) = km {
-            let a_mapping = km.lookup('a').expect("'a' should be in fr keymap");
-            let q_mapping = km.lookup('q').expect("'q' should be in fr keymap");
-            let z_mapping = km.lookup('z').expect("'z' should be in fr keymap");
-            let w_mapping = km.lookup('w').expect("'w' should be in fr keymap");
-            // AZERTY: 'a' is at QWERTY 'q' position (evdev 16),
-            //         'q' is at QWERTY 'a' position (evdev 30).
-            assert_eq!(a_mapping.keycode, 16, "'a' should be at evdev 16 on AZERTY");
-            assert_eq!(q_mapping.keycode, 30, "'q' should be at evdev 30 on AZERTY");
-            // AZERTY: 'z' is at QWERTY 'w' position (evdev 17),
-            //         'w' is at QWERTY 'z' position (evdev 44).
-            assert_eq!(z_mapping.keycode, 17, "'z' should be at evdev 17 on AZERTY");
-            assert_eq!(w_mapping.keycode, 44, "'w' should be at evdev 44 on AZERTY");
-        }
+    fn swiss_layout() {
+        let km = XkbKeymap::from_layout(&layout("ch", "")).unwrap();
+        assert_key(&km, 'z', 21, false, "Swiss");
+        assert_key(&km, 'y', 44, false, "Swiss");
     }
+
+    #[test]
+    fn czech_layout() {
+        let km = XkbKeymap::from_layout(&layout("cz", "")).unwrap();
+        assert_key(&km, 'z', 21, false, "Czech");
+        assert_key(&km, 'y', 44, false, "Czech");
+        assert_key(&km, 'ů', 39, false, "Czech");
+    }
+
+    #[test]
+    fn slovak_layout() {
+        let km = XkbKeymap::from_layout(&layout("sk", "")).unwrap();
+        assert_key(&km, 'z', 21, false, "Slovak");
+        assert_key(&km, 'y', 44, false, "Slovak");
+        assert_key(&km, 'ô', 39, false, "Slovak");
+    }
+
+    #[test]
+    fn hungarian_layout() {
+        let km = XkbKeymap::from_layout(&layout("hu", "")).unwrap();
+        assert_key(&km, 'z', 21, false, "Hungarian");
+        assert_key(&km, 'y', 44, false, "Hungarian");
+        assert_key(&km, 'ö', 11, false, "Hungarian");
+        assert_key(&km, 'ü', 12, false, "Hungarian");
+    }
+
+    // --- AZERTY family (a/q and z/w swapped) ---
+
+    #[test]
+    fn french_layout() {
+        let km = XkbKeymap::from_layout(&layout("fr", "")).unwrap();
+        assert_key(&km, 'a', 16, false, "French");
+        assert_key(&km, 'q', 30, false, "French");
+        assert_key(&km, 'z', 17, false, "French");
+        assert_key(&km, 'w', 44, false, "French");
+    }
+
+    #[test]
+    fn belgian_layout() {
+        let km = XkbKeymap::from_layout(&layout("be", "")).unwrap();
+        assert_key(&km, 'a', 16, false, "Belgian");
+        assert_key(&km, 'q', 30, false, "Belgian");
+        assert_key(&km, 'z', 17, false, "Belgian");
+        assert_key(&km, 'w', 44, false, "Belgian");
+        assert_key(&km, 'm', 39, false, "Belgian");
+    }
+
+    // --- QWERTY-based with special characters ---
+
+    #[test]
+    fn spanish_layout() {
+        let km = XkbKeymap::from_layout(&layout("es", "")).unwrap();
+        assert_key(&km, 'ñ', 39, false, "Spanish");
+    }
+
+    #[test]
+    fn portuguese_layout() {
+        let km = XkbKeymap::from_layout(&layout("pt", "")).unwrap();
+        assert_key(&km, 'a', 30, false, "Portuguese");
+        assert_key(&km, 'z', 44, false, "Portuguese");
+        assert_key(&km, 'q', 16, false, "Portuguese");
+    }
+
+    #[test]
+    fn italian_layout() {
+        let km = XkbKeymap::from_layout(&layout("it", "")).unwrap();
+        assert_key(&km, 'a', 30, false, "Italian");
+        assert_key(&km, 'z', 44, false, "Italian");
+        assert_key(&km, 'q', 16, false, "Italian");
+        assert_key(&km, 'w', 17, false, "Italian");
+    }
+
+    #[test]
+    fn uk_layout() {
+        let km = XkbKeymap::from_layout(&layout("gb", "")).unwrap();
+        assert_key(&km, 'a', 30, false, "UK");
+        assert_key(&km, 'z', 44, false, "UK");
+        // UK has '#' without shift (evdev 43), unlike US where it's Shift+3.
+        assert_key(&km, '#', 43, false, "UK");
+        assert_key(&km, '£', 4, true, "UK");
+    }
+
+    // --- Nordic layouts ---
+
+    #[test]
+    fn swedish_layout() {
+        let km = XkbKeymap::from_layout(&layout("se", "")).unwrap();
+        assert_key(&km, 'ö', 39, false, "Swedish");
+        assert_key(&km, 'ä', 40, false, "Swedish");
+    }
+
+    #[test]
+    fn norwegian_layout() {
+        let km = XkbKeymap::from_layout(&layout("no", "")).unwrap();
+        assert_key(&km, 'ø', 39, false, "Norwegian");
+        assert_key(&km, 'æ', 40, false, "Norwegian");
+    }
+
+    #[test]
+    fn danish_layout() {
+        let km = XkbKeymap::from_layout(&layout("dk", "")).unwrap();
+        assert_key(&km, 'ø', 40, false, "Danish");
+        assert_key(&km, 'æ', 39, false, "Danish");
+    }
+
+    #[test]
+    fn finnish_layout() {
+        let km = XkbKeymap::from_layout(&layout("fi", "")).unwrap();
+        assert_key(&km, 'ö', 39, false, "Finnish");
+        assert_key(&km, 'ä', 40, false, "Finnish");
+    }
+
+    // --- Eastern European ---
+
+    #[test]
+    fn polish_layout() {
+        let km = XkbKeymap::from_layout(&layout("pl", "")).unwrap();
+        assert_key(&km, 'a', 30, false, "Polish");
+        assert_key(&km, 'z', 44, false, "Polish");
+        // Polish special chars via AltGr (mapped as shift in our model).
+        assert_key(&km, 'ą', 30, true, "Polish");
+        assert_key(&km, 'ę', 18, true, "Polish");
+    }
+
+    // --- Alternative Latin layouts ---
 
     #[test]
     fn dvorak_layout() {
-        // Dvorak heavily remaps the home row and top row.
-        let km = XkbKeymap::from_layout(&layout("us", "dvorak"));
-        if let Ok(km) = km {
-            // Dvorak home row: a o e u i d h t n s
-            // 'o' is at QWERTY 's' position (evdev 31).
-            let o_mapping = km.lookup('o').expect("'o' should be in dvorak keymap");
-            assert_eq!(o_mapping.keycode, 31, "'o' should be at evdev 31 on Dvorak");
-            // 'e' is at QWERTY 'd' position (evdev 32).
-            let e_mapping = km.lookup('e').expect("'e' should be in dvorak keymap");
-            assert_eq!(e_mapping.keycode, 32, "'e' should be at evdev 32 on Dvorak");
-            // 's' is at QWERTY ';' position (evdev 39).
-            let s_mapping = km.lookup('s').expect("'s' should be in dvorak keymap");
-            assert_eq!(s_mapping.keycode, 39, "'s' should be at evdev 39 on Dvorak");
-        }
+        let km = XkbKeymap::from_layout(&layout("us", "dvorak")).unwrap();
+        assert_key(&km, 'o', 31, false, "Dvorak");
+        assert_key(&km, 'e', 32, false, "Dvorak");
+        assert_key(&km, 's', 39, false, "Dvorak");
     }
 
     #[test]
     fn colemak_layout() {
-        // Colemak moves several keys from QWERTY positions.
-        let km = XkbKeymap::from_layout(&layout("us", "colemak"));
-        if let Ok(km) = km {
-            // Colemak: 'f' is at QWERTY 'e' position (evdev 18).
-            let f_mapping = km.lookup('f').expect("'f' should be in colemak keymap");
-            assert_eq!(f_mapping.keycode, 18, "'f' should be at evdev 18 on Colemak");
-            // Colemak: 'n' is at QWERTY 'j' position (evdev 36).
-            let n_mapping = km.lookup('n').expect("'n' should be in colemak keymap");
-            assert_eq!(n_mapping.keycode, 36, "'n' should be at evdev 36 on Colemak");
-            // Colemak: 's' moves to QWERTY 'd' position (evdev 32).
-            let s_mapping = km.lookup('s').expect("'s' should be in colemak keymap");
-            assert_eq!(s_mapping.keycode, 32, "'s' should be at evdev 32 on Colemak");
-        }
+        let km = XkbKeymap::from_layout(&layout("us", "colemak")).unwrap();
+        assert_key(&km, 'f', 18, false, "Colemak");
+        assert_key(&km, 'n', 36, false, "Colemak");
+        assert_key(&km, 's', 32, false, "Colemak");
+    }
+
+    // --- Non-Latin layouts ---
+
+    #[test]
+    fn russian_layout() {
+        let km = XkbKeymap::from_layout(&layout("ru", "")).unwrap();
+        assert_key(&km, 'ф', 30, false, "Russian");
+        assert_key(&km, 'я', 44, false, "Russian");
+        assert_key(&km, 'й', 16, false, "Russian");
+        assert_key(&km, 'ц', 17, false, "Russian");
     }
 
     #[test]
-    fn spanish_layout() {
-        // Spanish layout keeps most alpha keys in QWERTY positions
-        // but has unique characters like 'ñ' (at QWERTY ';' position, evdev 39).
-        let km = XkbKeymap::from_layout(&layout("es", ""));
-        if let Ok(km) = km {
-            let n_tilde = km.lookup('ñ').expect("'ñ' should be in es keymap");
-            assert_eq!(n_tilde.keycode, 39, "'ñ' should be at evdev 39 on Spanish");
-            assert!(!n_tilde.shift, "'ñ' should not require shift on Spanish");
-        }
+    fn ukrainian_layout() {
+        let km = XkbKeymap::from_layout(&layout("ua", "")).unwrap();
+        assert_key(&km, 'ф', 30, false, "Ukrainian");
+        assert_key(&km, 'я', 44, false, "Ukrainian");
+        assert_key(&km, 'й', 16, false, "Ukrainian");
+        assert_key(&km, 'і', 31, false, "Ukrainian");
+    }
+
+    #[test]
+    fn greek_layout() {
+        let km = XkbKeymap::from_layout(&layout("gr", "")).unwrap();
+        assert_key(&km, 'α', 30, false, "Greek");
+        assert_key(&km, 'ζ', 44, false, "Greek");
+        assert_key(&km, 'ω', 47, false, "Greek");
+    }
+
+    #[test]
+    fn japanese_layout() {
+        // Japanese (jp) is QWERTY-based for Latin characters.
+        let km = XkbKeymap::from_layout(&layout("jp", "")).unwrap();
+        assert_key(&km, 'a', 30, false, "Japanese");
+        assert_key(&km, 'z', 44, false, "Japanese");
     }
 }
