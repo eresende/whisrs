@@ -269,14 +269,17 @@ mod tests {
         }
     }
 
+    fn layout(name: &str, variant: &str) -> KeyboardLayout {
+        KeyboardLayout {
+            layout: name.to_string(),
+            variant: variant.to_string(),
+        }
+    }
+
     #[test]
     fn german_layout_yz_swap() {
         // On QWERTZ (de), 'z' and 'y' are in swapped positions compared to US.
-        let de = KeyboardLayout {
-            layout: "de".to_string(),
-            variant: String::new(),
-        };
-        let km = XkbKeymap::from_layout(&de);
+        let km = XkbKeymap::from_layout(&layout("de", ""));
         if let Ok(km) = km {
             let y_mapping = km.lookup('y').expect("'y' should be in de keymap");
             let z_mapping = km.lookup('z').expect("'z' should be in de keymap");
@@ -290,6 +293,73 @@ mod tests {
                 y_mapping.keycode, 44,
                 "'y' should be at evdev keycode 44 on QWERTZ"
             );
+        }
+    }
+
+    #[test]
+    fn french_azerty_layout() {
+        // On AZERTY (fr), 'a'/'q' and 'z'/'w' are swapped compared to QWERTY.
+        let km = XkbKeymap::from_layout(&layout("fr", ""));
+        if let Ok(km) = km {
+            let a_mapping = km.lookup('a').expect("'a' should be in fr keymap");
+            let q_mapping = km.lookup('q').expect("'q' should be in fr keymap");
+            let z_mapping = km.lookup('z').expect("'z' should be in fr keymap");
+            let w_mapping = km.lookup('w').expect("'w' should be in fr keymap");
+            // AZERTY: 'a' is at QWERTY 'q' position (evdev 16),
+            //         'q' is at QWERTY 'a' position (evdev 30).
+            assert_eq!(a_mapping.keycode, 16, "'a' should be at evdev 16 on AZERTY");
+            assert_eq!(q_mapping.keycode, 30, "'q' should be at evdev 30 on AZERTY");
+            // AZERTY: 'z' is at QWERTY 'w' position (evdev 17),
+            //         'w' is at QWERTY 'z' position (evdev 44).
+            assert_eq!(z_mapping.keycode, 17, "'z' should be at evdev 17 on AZERTY");
+            assert_eq!(w_mapping.keycode, 44, "'w' should be at evdev 44 on AZERTY");
+        }
+    }
+
+    #[test]
+    fn dvorak_layout() {
+        // Dvorak heavily remaps the home row and top row.
+        let km = XkbKeymap::from_layout(&layout("us", "dvorak"));
+        if let Ok(km) = km {
+            // Dvorak home row: a o e u i d h t n s
+            // 'o' is at QWERTY 's' position (evdev 31).
+            let o_mapping = km.lookup('o').expect("'o' should be in dvorak keymap");
+            assert_eq!(o_mapping.keycode, 31, "'o' should be at evdev 31 on Dvorak");
+            // 'e' is at QWERTY 'd' position (evdev 32).
+            let e_mapping = km.lookup('e').expect("'e' should be in dvorak keymap");
+            assert_eq!(e_mapping.keycode, 32, "'e' should be at evdev 32 on Dvorak");
+            // 's' is at QWERTY ';' position (evdev 39).
+            let s_mapping = km.lookup('s').expect("'s' should be in dvorak keymap");
+            assert_eq!(s_mapping.keycode, 39, "'s' should be at evdev 39 on Dvorak");
+        }
+    }
+
+    #[test]
+    fn colemak_layout() {
+        // Colemak moves several keys from QWERTY positions.
+        let km = XkbKeymap::from_layout(&layout("us", "colemak"));
+        if let Ok(km) = km {
+            // Colemak: 'f' is at QWERTY 'e' position (evdev 18).
+            let f_mapping = km.lookup('f').expect("'f' should be in colemak keymap");
+            assert_eq!(f_mapping.keycode, 18, "'f' should be at evdev 18 on Colemak");
+            // Colemak: 'n' is at QWERTY 'j' position (evdev 36).
+            let n_mapping = km.lookup('n').expect("'n' should be in colemak keymap");
+            assert_eq!(n_mapping.keycode, 36, "'n' should be at evdev 36 on Colemak");
+            // Colemak: 's' moves to QWERTY 'd' position (evdev 32).
+            let s_mapping = km.lookup('s').expect("'s' should be in colemak keymap");
+            assert_eq!(s_mapping.keycode, 32, "'s' should be at evdev 32 on Colemak");
+        }
+    }
+
+    #[test]
+    fn spanish_layout() {
+        // Spanish layout keeps most alpha keys in QWERTY positions
+        // but has unique characters like 'ñ' (at QWERTY ';' position, evdev 39).
+        let km = XkbKeymap::from_layout(&layout("es", ""));
+        if let Ok(km) = km {
+            let n_tilde = km.lookup('ñ').expect("'ñ' should be in es keymap");
+            assert_eq!(n_tilde.keycode, 39, "'ñ' should be at evdev 39 on Spanish");
+            assert!(!n_tilde.shift, "'ñ' should not require shift on Spanish");
         }
     }
 }
