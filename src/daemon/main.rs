@@ -1251,7 +1251,8 @@ fn type_text_at_cursor(text: &str) -> Result<()> {
     use whisrs::input::uinput::UinputKeyboard;
     use whisrs::input::KeyInjector;
 
-    let keymap = XkbKeymap::from_default_layout().context("failed to build XKB keymap")?;
+    let detected_layout = whisrs::input::keymap::KeyboardLayout::detect();
+    let keymap = XkbKeymap::from_layout(&detected_layout).context("failed to build XKB keymap")?;
     let clipboard = ClipboardOps::detect();
     let mut keyboard = match UinputKeyboard::new(keymap, clipboard) {
         Ok(kb) => kb,
