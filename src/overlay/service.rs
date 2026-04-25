@@ -3,6 +3,24 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
+#[derive(Debug, thiserror::Error)]
+enum OverlayError {
+    #[error("Wayland connection error: {0}")]
+    Connect(#[from] wayland_client::ConnectError),
+    #[error("Wayland globals error: {0}")]
+    Globals(#[from] wayland_client::globals::GlobalError),
+    #[error("smithay bind error: {0}")]
+    Bind(#[from] wayland_client::globals::BindError),
+    #[error("smithay shm create error: {0}")]
+    Shm(#[from] smithay_client_toolkit::shm::CreatePoolError),
+    #[error("Wayland dispatch error: {0}")]
+    Dispatch(#[from] wayland_client::DispatchError),
+    #[error("D-Bus error: {0}")]
+    DBus(#[from] zbus::Error),
+    #[error("D-Bus signal error: {0}")]
+    DBusSignal(#[from] zbus::fdo::Error),
+}
+
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
@@ -37,7 +55,10 @@ const BOTTOM_MARGIN: i32 = 34;
 /// The Wayland event loop runs on a dedicated OS thread because it is a
 /// blocking client loop. A small Tokio task forwards daemon state changes into
 /// that thread.
-pub async fn spawn_overlay(mut state_rx: watch::Receiver<State>, mut level_rx: watch::Receiver<f32>) {
+pub async fn spawn_overlay(
+    mut state_rx: watch::Receiver<State>,
+    mut level_rx: watch::Receiver<f32>,
+) {
     let gnome_state_rx = state_rx.clone();
     let gnome_level_rx = level_rx.clone();
     tokio::spawn(async move {
@@ -80,7 +101,7 @@ pub async fn spawn_overlay(mut state_rx: watch::Receiver<State>, mut level_rx: w
 async fn run_gnome_broadcaster(
     mut state_rx: watch::Receiver<State>,
     level_rx: watch::Receiver<f32>,
-) -> anyhow::Result<()> {
+) -> Result<(), OverlayError> {
     let conn = zbus::connection::Builder::session()?
         .serve_at("/org/whisrs/Overlay", GnomeOverlayBus)?
         .name("org.whisrs.Overlay")?
@@ -148,7 +169,10 @@ impl GnomeOverlayBus {
     }
 }
 
-fn run_overlay(state_rx: mpsc::Receiver<State>, level_rx: mpsc::Receiver<f32>) -> anyhow::Result<()> {
+fn run_overlay(
+    state_rx: mpsc::Receiver<State>,
+    level_rx: mpsc::Receiver<f32>,
+) -> Result<(), OverlayError> {
     let conn = Connection::connect_to_env()?;
     let (globals, mut event_queue) = registry_queue_init(&conn)?;
     let qh = event_queue.handle();
@@ -422,7 +446,18 @@ fn draw_overlay(canvas: &mut [u8], width: u32, height: u32, state: State, frame:
     rounded_stroke(canvas, width, height, x, y, w, h, 18, border);
 
     draw_status_dot(canvas, width, height, 48, height / 2, accent, frame);
-    draw_wave(canvas, width, height, 92, height / 2, accent, frame, level);
+    draw_wave(
+        canvas,
+        width,
+        height,
+        WaveParams {
+            x: 92,
+            cy: height / 2,
+            color: accent,
+            frame,
+            level,
+        },
+    );
 
     let label = match state {
         State::Recording => "RECORDING",
@@ -540,16 +575,22 @@ fn draw_status_dot(
     circle(canvas, width, height, cx, cy, 7, color);
 }
 
-fn draw_wave(
-    canvas: &mut [u8],
-    width: u32,
-    height: u32,
+struct WaveParams {
     x: u32,
     cy: u32,
     color: [u8; 4],
     frame: u32,
     level: f32,
-) {
+}
+
+fn draw_wave(canvas: &mut [u8], width: u32, height: u32, params: WaveParams) {
+    let WaveParams {
+        x,
+        cy,
+        color,
+        frame,
+        level,
+    } = params;
     for i in 0..10 {
         let phase = ((frame + i * 5) % 32) as f32 / 32.0;
         let animated = (phase * std::f32::consts::TAU).sin().abs();
