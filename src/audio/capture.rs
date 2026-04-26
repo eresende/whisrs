@@ -245,9 +245,10 @@ fn audio_level(data: &[i16]) -> f32 {
         .sum();
     let rms = (sum_squares / data.len() as f32).sqrt();
 
-    // Map RMS to a perceptual 0–1 range.  A sqrt curve gives quiet speech
-    // visible movement while keeping loud speech below saturation.
-    (rms * 100.0).sqrt().clamp(0.0, 1.0)
+    // Soft compressor: 1 - exp(-k*rms). Keeps quiet speech visible without
+    // saturating on the first loud syllable, so bars actually track speech
+    // dynamics instead of pegging at full deflection.
+    (1.0 - (-rms * 12.0).exp()).clamp(0.0, 1.0)
 }
 
 /// Encode raw PCM samples (16kHz, mono, i16) to a WAV byte buffer.

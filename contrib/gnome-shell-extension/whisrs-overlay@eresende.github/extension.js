@@ -1,7 +1,6 @@
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import Pango from 'gi://Pango';
 import St from 'gi://St';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
@@ -11,8 +10,13 @@ const DBUS_INTERFACE = 'org.whisrs.Overlay';
 const DBUS_PATH = '/org/whisrs/Overlay';
 const STATE_SIGNAL = 'StateChanged';
 const LEVEL_SIGNAL = 'LevelChanged';
-const OVERLAY_WIDTH = 250;
-const OVERLAY_HEIGHT = 50;
+
+const OVERLAY_WIDTH = 140;
+const OVERLAY_HEIGHT = 28;
+const BOTTOM_MARGIN = 22;
+const BAR_COUNT = 5;
+const BAR_BASELINE = 3;
+const BAR_MAX_H = 18;
 
 export default class WhisrsOverlayExtension extends Extension {
     enable() {
@@ -23,13 +27,14 @@ export default class WhisrsOverlayExtension extends Extension {
             visible: false,
         });
 
-        // Bars (recording)
-        this._bars = [];
+        this._dot = new St.Widget({style_class: 'whisrs-overlay-dot'});
+
         this._barsBox = new St.BoxLayout({
             style_class: 'whisrs-overlay-bars',
             y_align: Clutter.ActorAlign.CENTER,
         });
-        for (let i = 0; i < 4; i++) {
+        this._bars = [];
+        for (let i = 0; i < BAR_COUNT; i++) {
             const bar = new St.Widget({
                 style_class: 'whisrs-overlay-bar',
                 y_align: Clutter.ActorAlign.CENTER,
@@ -39,38 +44,12 @@ export default class WhisrsOverlayExtension extends Extension {
             this._barsBox.add_child(bar);
         }
 
-        // Spinner arc (transcribing) — drawn as a styled widget
-        this._spinner = new St.Widget({style_class: 'whisrs-overlay-spinner'});
-
-        // Label
-        this._label = new St.Label({
-            style_class: 'whisrs-overlay-label',
-            text: '',
-        });
-        this._label.clutter_text.set_ellipsize(Pango.EllipsizeMode.NONE);
-        this._label.clutter_text.set_line_wrap(false);
-
-        // Divider + timer (recording only)
-        this._divider = new St.Widget({style_class: 'whisrs-overlay-divider'});
-        this._timer = new St.Label({
-            style_class: 'whisrs-overlay-timer',
-            text: '00:00',
-        });
-        this._timer.clutter_text.set_ellipsize(Pango.EllipsizeMode.NONE);
-
+        this._actor.add_child(this._dot);
         this._actor.add_child(this._barsBox);
-        this._actor.add_child(this._spinner);
-        this._actor.add_child(this._label);
-        this._actor.add_child(this._divider);
-        this._actor.add_child(this._timer);
         Main.uiGroup.add_child(this._actor);
 
         this._monitorsChangedId = Main.layoutManager.connect(
             'monitors-changed',
-            () => this._position()
-        );
-        this._allocationChangedId = this._actor.connect(
-            'notify::allocation',
             () => this._position()
         );
 
@@ -91,6 +70,11 @@ export default class WhisrsOverlayExtension extends Extension {
             }
         );
 
+        this._state = 'idle';
+        this._level = 0;
+        this._targetLevel = 0;
+        this._frame = 0;
+
         this._position();
     }
 
@@ -109,23 +93,16 @@ export default class WhisrsOverlayExtension extends Extension {
             Main.layoutManager.disconnect(this._monitorsChangedId);
             this._monitorsChangedId = 0;
         }
-        if (this._allocationChangedId) {
-            this._actor.disconnect(this._allocationChangedId);
-            this._allocationChangedId = 0;
-        }
 
         this._actor?.destroy();
         this._actor = null;
         this._bars = [];
         this._barsBox = null;
-        this._spinner = null;
-        this._label = null;
-        this._divider = null;
-        this._timer = null;
+        this._dot = null;
     }
 
     _setState(state) {
-        if (!this._actor || !this._label)
+        if (!this._actor)
             return;
 
         const normalized = String(state).toLowerCase();
@@ -135,32 +112,23 @@ export default class WhisrsOverlayExtension extends Extension {
 
         if (normalized === 'recording') {
             this._state = 'recording';
-            this._recordingStart = Date.now();
-            this._label.text = 'RECORDING';
             this._actor.add_style_class_name('whisrs-overlay-recording');
             this._actor.visible = true;
-            this._barsBox.visible = true;
-            this._spinner.visible = false;
-            this._divider.visible = true;
-            this._timer.visible = true;
             this._startAnimation();
-            this._position();
         } else if (normalized === 'transcribing') {
             this._state = 'transcribing';
-            this._label.text = 'TRANSCRIBING ....';
             this._actor.add_style_class_name('whisrs-overlay-transcribing');
             this._actor.visible = true;
-            this._barsBox.visible = false;
-            this._spinner.visible = true;
-            this._divider.visible = false;
-            this._timer.visible = false;
             this._startAnimation();
-            this._position();
         } else {
             this._state = 'idle';
-            this._label.text = '';
             this._actor.add_style_class_name('whisrs-overlay-hidden');
-            this._actor.visible = false;
+            // Hide after the snappy CSS fade-out completes.
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 80, () => {
+                if (this._state === 'idle' && this._actor)
+                    this._actor.visible = false;
+                return GLib.SOURCE_REMOVE;
+            });
             this._stopAnimation();
         }
     }
@@ -171,41 +139,19 @@ export default class WhisrsOverlayExtension extends Extension {
 
         const monitor = Main.layoutManager.primaryMonitor;
         const x = Math.floor(monitor.x + (monitor.width - OVERLAY_WIDTH) / 2);
-        const y = Math.floor(monitor.y + monitor.height - OVERLAY_HEIGHT - 60);
+        const y = Math.floor(monitor.y + monitor.height - OVERLAY_HEIGHT - BOTTOM_MARGIN);
         this._actor.set_position(Math.max(monitor.x, x), Math.max(monitor.y, y));
         this._actor.set_size(OVERLAY_WIDTH, OVERLAY_HEIGHT);
-        this._layoutChildren();
-        this._actor.set_pivot_point(0.5, 0.5);
-        this._actor.set_easing_mode(Clutter.AnimationMode.EASE_OUT_QUAD);
-        this._actor.set_easing_duration(120);
-    }
-
-    _layoutChildren() {
-        if (!this._actor || !this._label)
-            return;
 
         const cy = Math.floor(OVERLAY_HEIGHT / 2);
-
-        // Recording layout: [bars] [RECORDING] | [00:00]
+        if (this._dot) {
+            this._dot.set_position(10, cy - 3);
+            this._dot.set_size(6, 6);
+        }
         if (this._barsBox) {
-            this._barsBox.set_position(24, cy - 16);
-            this._barsBox.set_size(36, 32);
-        }
-        if (this._label) {
-            const labelX = this._state === 'transcribing' ? 62 : 70;
-            this._label.set_position(labelX, cy - 10);
-        }
-        if (this._divider) {
-            this._divider.set_position(178, cy - 12);
-            this._divider.set_size(1, 24);
-        }
-        if (this._timer)
-            this._timer.set_position(188, cy - 10);
-
-        // Transcribing layout: [spinner] [TRANSCRIBING]
-        if (this._spinner) {
-            this._spinner.set_position(16, cy - 12);
-            this._spinner.set_size(24, 24);
+            const barsX = 26;
+            this._barsBox.set_position(barsX, cy - Math.floor(BAR_MAX_H / 2));
+            this._barsBox.set_size(OVERLAY_WIDTH - barsX - 8, BAR_MAX_H);
         }
     }
 
@@ -213,16 +159,11 @@ export default class WhisrsOverlayExtension extends Extension {
         if (this._animationId)
             return;
 
-        this._frame = 0;
-        this._level = 0;
-        this._targetLevel = 0;
         this._animationId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 24, () => {
             this._frame++;
             const target = this._targetLevel ?? 0;
             this._level = target > this._level ? target : Math.max(0, this._level * 0.85);
             this._updateBars();
-            this._updateTimer();
-            this._updateSpinner();
             return GLib.SOURCE_CONTINUE;
         });
         this._updateBars();
@@ -236,35 +177,33 @@ export default class WhisrsOverlayExtension extends Extension {
     }
 
     _updateBars() {
-        if (!this._bars || this._state !== 'recording')
+        if (!this._bars || this._bars.length === 0)
             return;
 
-        for (let i = 0; i < this._bars.length; i++) {
+        if (this._state === 'recording') {
             const raw = Number.isFinite(this._level) ? this._level : 0;
-            const level = raw < 0.1 ? 0 : Math.min(1, (raw - 0.1) / 0.85);
-            const variance = 0.6 + (((i * 7 + 3) % 4) / 4) * 0.4;
-            const height = 4 + Math.round(Math.min(1, level * variance) * 28);
-            this._bars[i].set_height(height);
+            const level = Math.max(0, Math.min(1, raw));
+            for (let i = 0; i < this._bars.length; i++) {
+                const variance = 0.7 + Math.sin(i * 1.7) * 0.3;
+                const phase = Math.abs(Math.sin(this._frame / 6.0 + i * 0.9));
+                const effective = Math.min(1, Math.max(0, level * variance));
+                const dynamic = effective * (0.6 + 0.4 * phase);
+                const h = Math.max(BAR_BASELINE, Math.round(BAR_BASELINE + dynamic * (BAR_MAX_H - BAR_BASELINE)));
+                this._bars[i].set_height(h);
+                this._bars[i].opacity = 255;
+            }
+        } else if (this._state === 'transcribing') {
+            const cycle = BAR_COUNT * 2 - 2;
+            const pos = Math.floor(this._frame / 4) % Math.max(1, cycle);
+            const active = pos < BAR_COUNT ? pos : cycle - pos;
+            for (let i = 0; i < this._bars.length; i++) {
+                const dist = Math.abs(i - active);
+                const intensity = Math.max(0.18, 1 - dist / 2.5);
+                const h = Math.round(BAR_BASELINE + (BAR_MAX_H - BAR_BASELINE) * (0.45 + 0.55 * intensity));
+                this._bars[i].set_height(Math.max(BAR_BASELINE, h));
+                this._bars[i].opacity = Math.round(255 * intensity);
+            }
         }
-    }
-
-    _updateTimer() {
-        if (!this._timer || this._state !== 'recording' || !this._recordingStart)
-            return;
-
-        const elapsed = Math.floor((Date.now() - this._recordingStart) / 1000);
-        const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
-        const ss = String(elapsed % 60).padStart(2, '0');
-        this._timer.text = `${mm}:${ss}`;
-    }
-
-    _updateSpinner() {
-        if (!this._spinner || this._state !== 'transcribing')
-            return;
-
-        const angle = (this._frame * 8) % 360;
-        this._spinner.set_pivot_point(0.5, 0.5);
-        this._spinner.set_rotation_angle(Clutter.RotateAxis.Z_AXIS, angle);
     }
 
     _setLevel(level) {
@@ -273,7 +212,5 @@ export default class WhisrsOverlayExtension extends Extension {
             return;
 
         this._targetLevel = Math.max(0, Math.min(1, numeric));
-        if (this._state === 'recording')
-            this._updateBars();
     }
 }

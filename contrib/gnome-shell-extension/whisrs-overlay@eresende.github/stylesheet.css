@@ -1,80 +1,39 @@
 .whisrs-overlay {
-  width: 280px;
-  height: 56px;
   border-radius: 999px;
-  border: 2px solid rgba(239, 68, 68, 0.0);
-  background-color: rgba(18, 20, 24, 0.95);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-  transition-duration: 150ms;
+  background-color: rgba(18, 20, 24, 0.92);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  transition-duration: 60ms;
 }
 
 .whisrs-overlay-hidden {
   opacity: 0;
 }
 
-.whisrs-overlay-recording {
-  border-color: rgba(239, 68, 68, 0.7);
+/* Status dot */
+.whisrs-overlay-dot {
+  border-radius: 999px;
+  background-color: #ef4444;
 }
 
-.whisrs-overlay-transcribing {
-  border-color: rgba(96, 165, 250, 0.5);
+.whisrs-overlay-transcribing .whisrs-overlay-dot {
+  background-color: #60a5fa;
 }
 
 /* Bars */
 .whisrs-overlay-bars {
-  height: 32px;
-  spacing: 3px;
+  spacing: 4px;
   align-items: center;
 }
 
 .whisrs-overlay-bar {
-  width: 5px;
+  width: 6px;
   border-radius: 3px;
   background-color: #ef4444;
-  height: 4px;
-  min-height: 4px;
-  max-height: 32px;
+  height: 3px;
+  min-height: 3px;
+  max-height: 18px;
 }
 
 .whisrs-overlay-transcribing .whisrs-overlay-bar {
   background-color: #60a5fa;
-}
-
-/* Spinner — a partial arc via border trick */
-.whisrs-overlay-spinner {
-  width: 20px;
-  height: 20px;
-  border-radius: 999px;
-  border: 2px solid rgba(96, 165, 250, 0.2);
-  border-top-color: #60a5fa;
-}
-
-/* Label */
-.whisrs-overlay-label {
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 1px;
-}
-
-.whisrs-overlay-recording .whisrs-overlay-label {
-  color: #ef4444;
-}
-
-.whisrs-overlay-transcribing .whisrs-overlay-label {
-  color: #60a5fa;
-}
-
-/* Divider */
-.whisrs-overlay-divider {
-  width: 1px;
-  height: 24px;
-  background-color: rgba(255, 255, 255, 0.2);
-}
-
-/* Timer */
-.whisrs-overlay-timer {
-  color: rgba(200, 200, 200, 0.7);
-  font-size: 13px;
-  font-weight: 500;
-  font-family: monospace;
 }

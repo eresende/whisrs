@@ -46,9 +46,10 @@ use wayland_client::{
 
 use crate::State;
 
-const WIDTH: u32 = 420;
-const HEIGHT: u32 = 96;
-const BOTTOM_MARGIN: i32 = 34;
+const WIDTH: u32 = 140;
+const HEIGHT: u32 = 28;
+const BOTTOM_MARGIN: i32 = 22;
+const FADE_STEP: f32 = 0.55;
 
 /// Spawn the bottom recording overlay.
 ///
@@ -210,7 +211,9 @@ fn run_overlay(
         first_configure: true,
         width: WIDTH,
         height: HEIGHT,
-        state: State::Idle,
+        target_state: State::Idle,
+        visible_state: State::Idle,
+        alpha: 0.0,
         frame: 0,
         level: 0.0,
     };
@@ -236,7 +239,9 @@ struct Overlay {
     first_configure: bool,
     width: u32,
     height: u32,
-    state: State,
+    target_state: State,
+    visible_state: State,
+    alpha: f32,
     frame: u32,
     level: f32,
 }
@@ -244,14 +249,30 @@ struct Overlay {
 impl Overlay {
     fn apply_state_updates(&mut self) {
         while let Ok(state) = self.state_rx.try_recv() {
-            self.state = state;
+            self.target_state = state;
+            if state != State::Idle {
+                self.visible_state = state;
+            }
         }
         while let Ok(level) = self.level_rx.try_recv() {
-            // Decay toward new value; take max to preserve peaks within a frame
             self.level = level.clamp(0.0, 1.0);
         }
-        // Decay level each frame so silence brings bars down
-        self.level = (self.level * 0.88).max(0.0);
+        self.level = (self.level * 0.85).max(0.0);
+
+        let target_alpha = if self.target_state == State::Idle {
+            0.0
+        } else {
+            1.0
+        };
+        let diff = target_alpha - self.alpha;
+        if diff.abs() <= FADE_STEP {
+            self.alpha = target_alpha;
+        } else {
+            self.alpha += diff.signum() * FADE_STEP;
+        }
+        if self.alpha == 0.0 {
+            self.visible_state = State::Idle;
+        }
     }
 
     fn draw(&mut self, qh: &QueueHandle<Self>) {
@@ -271,7 +292,15 @@ impl Overlay {
             return;
         };
 
-        draw_overlay(canvas, width, height, self.state, self.frame, self.level);
+        draw_overlay(
+            canvas,
+            width,
+            height,
+            self.visible_state,
+            self.frame,
+            self.level,
+            self.alpha,
+        );
         self.frame = self.frame.wrapping_add(1);
 
         self.layer
@@ -423,56 +452,43 @@ impl ProvidesRegistryState for Overlay {
     registry_handlers![OutputState];
 }
 
-fn draw_overlay(canvas: &mut [u8], width: u32, height: u32, state: State, frame: u32, level: f32) {
+fn draw_overlay(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    state: State,
+    frame: u32,
+    level: f32,
+    alpha: f32,
+) {
     clear(canvas);
 
-    if state == State::Idle {
+    if alpha <= 0.0 || state == State::Idle {
         return;
     }
 
-    let bg = [232, 18, 22, 28];
-    let border = [105, 255, 255, 255];
+    let bg = scale_alpha([235, 18, 20, 24], alpha);
     let accent = match state {
-        State::Recording => [255, 239, 68, 68],
-        State::Transcribing => [255, 245, 158, 11],
-        State::Idle => [0, 0, 0, 0],
+        State::Recording => scale_alpha([255, 239, 68, 68], alpha),
+        State::Transcribing => scale_alpha([255, 96, 165, 250], alpha),
+        State::Idle => return,
     };
 
-    let x = 8;
-    let y = 8;
-    let w = width.saturating_sub(16);
-    let h = height.saturating_sub(16);
-    rounded_rect(canvas, width, height, x, y, w, h, 18, bg);
-    rounded_stroke(canvas, width, height, x, y, w, h, 18, border);
+    let radius = height / 2;
+    rounded_rect(canvas, width, height, 0, 0, width, height, radius, bg);
 
-    draw_status_dot(canvas, width, height, 48, height / 2, accent, frame);
-    draw_wave(
-        canvas,
-        width,
-        height,
-        WaveParams {
-            x: 92,
-            cy: height / 2,
-            color: accent,
-            frame,
-            level,
-        },
-    );
-
-    let label = match state {
-        State::Recording => "RECORDING",
-        State::Transcribing => "TRANSCRIBING",
-        State::Idle => "",
+    let cy = height / 2;
+    let dot_pulse = match state {
+        State::Recording => (((frame as f32 / 12.0).sin() + 1.0) * 0.5 * 1.0) as i32,
+        _ => 0,
     };
-    draw_text(
-        canvas,
-        width,
-        height,
-        244,
-        (height / 2).saturating_sub(10),
-        label,
-        [245, 245, 245, 245],
-    );
+    circle(canvas, width, height, 14, cy, 3 + dot_pulse, accent);
+
+    match state {
+        State::Recording => draw_bars(canvas, width, height, accent, frame, level),
+        State::Transcribing => draw_sweep(canvas, width, height, accent, frame),
+        State::Idle => {}
+    }
 }
 
 fn clear(canvas: &mut [u8]) {
@@ -494,37 +510,6 @@ fn rounded_rect(
     for py in y..y + h {
         for px in x..x + w {
             if inside_rounded_rect(px, py, x, y, w, h, radius) {
-                blend_pixel(canvas, width, height, px, py, color);
-            }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn rounded_stroke(
-    canvas: &mut [u8],
-    width: u32,
-    height: u32,
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
-    radius: u32,
-    color: [u8; 4],
-) {
-    for py in y..y + h {
-        for px in x..x + w {
-            if inside_rounded_rect(px, py, x, y, w, h, radius)
-                && !inside_rounded_rect(
-                    px,
-                    py,
-                    x + 1,
-                    y + 1,
-                    w - 2,
-                    h - 2,
-                    radius.saturating_sub(1),
-                )
-            {
                 blend_pixel(canvas, width, height, px, py, color);
             }
         }
@@ -553,62 +538,59 @@ fn inside_rounded_rect(px: u32, py: u32, x: u32, y: u32, w: u32, h: u32, radius:
     dx * dx + dy * dy <= (radius as i32) * (radius as i32)
 }
 
-fn draw_status_dot(
-    canvas: &mut [u8],
-    width: u32,
-    height: u32,
-    cx: u32,
-    cy: u32,
-    color: [u8; 4],
-    frame: u32,
-) {
-    let pulse = ((frame / 4) % 18) as i32;
-    circle(
-        canvas,
-        width,
-        height,
-        cx,
-        cy,
-        9 + pulse / 3,
-        [34, color[1], color[2], color[3]],
-    );
-    circle(canvas, width, height, cx, cy, 7, color);
+fn scale_alpha(color: [u8; 4], alpha: f32) -> [u8; 4] {
+    let a = (color[0] as f32 * alpha.clamp(0.0, 1.0)).round() as u8;
+    [a, color[1], color[2], color[3]]
 }
 
-struct WaveParams {
-    x: u32,
-    cy: u32,
-    color: [u8; 4],
-    frame: u32,
-    level: f32,
+const BAR_COUNT: u32 = 5;
+const BAR_W: u32 = 6;
+const BAR_X_START: u32 = 30;
+const BAR_PITCH: u32 = 22;
+const BAR_BASELINE: i32 = 3;
+const BAR_MAX_H: i32 = 18;
+
+fn draw_bars(canvas: &mut [u8], width: u32, height: u32, color: [u8; 4], frame: u32, level: f32) {
+    let cy = (height / 2) as i32;
+    for i in 0..BAR_COUNT {
+        let variance = 0.7 + (i as f32 * 1.7).sin() * 0.3;
+        let phase = ((frame as f32 / 6.0) + i as f32 * 0.9).sin().abs();
+        let effective = (level * variance).clamp(0.0, 1.0);
+        let dynamic = effective * (0.6 + 0.4 * phase);
+        let h = (BAR_BASELINE as f32 + dynamic * (BAR_MAX_H - BAR_BASELINE) as f32)
+            .round()
+            .max(BAR_BASELINE as f32) as i32;
+        let bx = BAR_X_START + i * BAR_PITCH;
+        let by = (cy - h / 2).max(0) as u32;
+        rounded_rect(canvas, width, height, bx, by, BAR_W, h as u32, 3, color);
+    }
 }
 
-fn draw_wave(canvas: &mut [u8], width: u32, height: u32, params: WaveParams) {
-    let WaveParams {
-        x,
-        cy,
-        color,
-        frame,
-        level,
-    } = params;
-    for i in 0..10 {
-        let phase = ((frame + i * 5) % 32) as f32 / 32.0;
-        let animated = (phase * std::f32::consts::TAU).sin().abs();
-        let variance = 0.65 + (i % 3) as f32 * 0.18;
-        let effective = (level * variance).min(1.0);
-        let bar_h = 6 + ((animated * 0.3 + effective * 0.7) * 26.0) as u32;
-        let bx = x + i * 12;
-        rounded_rect(
-            canvas,
-            width,
-            height,
-            bx,
-            cy - bar_h / 2,
-            6,
-            bar_h,
-            3,
-            color,
-        );
+fn draw_sweep(canvas: &mut [u8], width: u32, height: u32, color: [u8; 4], frame: u32) {
+    let cy = (height / 2) as i32;
+    let cycle = (BAR_COUNT as i32) * 2 - 2;
+    let pos = ((frame / 4) as i32) % cycle.max(1);
+    let active = if pos < BAR_COUNT as i32 {
+        pos
+    } else {
+        cycle - pos
+    };
+    for i in 0..BAR_COUNT {
+        let dist = (i as i32 - active).abs() as f32;
+        let intensity = (1.0 - dist / 2.5).max(0.18);
+        let bar_color = [
+            (color[0] as f32 * intensity).round() as u8,
+            color[1],
+            color[2],
+            color[3],
+        ];
+        let h = (BAR_BASELINE as f32
+            + (BAR_MAX_H - BAR_BASELINE) as f32 * (0.45 + 0.55 * intensity))
+            .round() as i32;
+        let h = h.max(BAR_BASELINE);
+        let bx = BAR_X_START + i * BAR_PITCH;
+        let by = (cy - h / 2).max(0) as u32;
+        rounded_rect(canvas, width, height, bx, by, BAR_W, h as u32, 3, bar_color);
     }
 }
 
@@ -620,99 +602,6 @@ fn circle(canvas: &mut [u8], width: u32, height: u32, cx: u32, cy: u32, r: i32, 
             if dx * dx + dy * dy <= r * r {
                 blend_pixel(canvas, width, height, x, y, color);
             }
-        }
-    }
-}
-
-fn draw_text(
-    canvas: &mut [u8],
-    width: u32,
-    height: u32,
-    x: u32,
-    y: u32,
-    text: &str,
-    color: [u8; 4],
-) {
-    let mut cursor = x;
-    for ch in text.chars() {
-        if ch == ' ' {
-            cursor += 8;
-        } else {
-            draw_char(canvas, width, height, cursor, y, ch, color);
-            cursor += 13;
-        }
-    }
-}
-
-fn draw_char(canvas: &mut [u8], width: u32, height: u32, x: u32, y: u32, ch: char, color: [u8; 4]) {
-    let glyph = glyph(ch);
-    for (row, bits) in glyph.iter().enumerate() {
-        for col in 0..5 {
-            if bits & (1 << (4 - col)) != 0 {
-                let px = x + col * 2;
-                let py = y + row as u32 * 2;
-                rect(canvas, width, height, px, py, 2, 2, color);
-            }
-        }
-    }
-}
-
-fn glyph(ch: char) -> [u8; 7] {
-    match ch {
-        'A' => [
-            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
-        ],
-        'B' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
-        ],
-        'C' => [
-            0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111,
-        ],
-        'D' => [
-            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
-        ],
-        'E' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
-        ],
-        'G' => [
-            0b01111, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111,
-        ],
-        'I' => [
-            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111,
-        ],
-        'N' => [
-            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
-        ],
-        'O' => [
-            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
-        ],
-        'R' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
-        ],
-        'S' => [
-            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
-        ],
-        'T' => [
-            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
-        ],
-        _ => [0; 7],
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn rect(
-    canvas: &mut [u8],
-    width: u32,
-    height: u32,
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
-    color: [u8; 4],
-) {
-    for py in y..(y + h).min(height) {
-        for px in x..(x + w).min(width) {
-            blend_pixel(canvas, width, height, px, py, color);
         }
     }
 }
@@ -733,14 +622,46 @@ mod tests {
     #[test]
     fn idle_draw_is_transparent() {
         let mut canvas = vec![1; (WIDTH * HEIGHT * 4) as usize];
-        draw_overlay(&mut canvas, WIDTH, HEIGHT, State::Idle, 0, 0.0);
+        draw_overlay(&mut canvas, WIDTH, HEIGHT, State::Idle, 0, 0.0, 0.0);
+        assert!(canvas.iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn faded_out_draw_is_transparent() {
+        let mut canvas = vec![1; (WIDTH * HEIGHT * 4) as usize];
+        draw_overlay(&mut canvas, WIDTH, HEIGHT, State::Recording, 0, 1.0, 0.0);
         assert!(canvas.iter().all(|b| *b == 0));
     }
 
     #[test]
     fn active_draw_has_visible_pixels() {
         let mut canvas = vec![0; (WIDTH * HEIGHT * 4) as usize];
-        draw_overlay(&mut canvas, WIDTH, HEIGHT, State::Recording, 0, 1.0);
+        draw_overlay(&mut canvas, WIDTH, HEIGHT, State::Recording, 0, 1.0, 1.0);
         assert!(canvas.chunks_exact(4).any(|px| px[3] != 0));
+    }
+
+    #[test]
+    fn silence_draws_minimal_baseline() {
+        // Bar color (red) overdraws the dark background; counting red-dominant
+        // pixels measures bar area regardless of the underlying pill.
+        // ARGB color is stored on disk as little-endian B,G,R,A — so the
+        // canvas byte layout is [B, G, R, A] per pixel.
+        fn red_pixels(canvas: &[u8]) -> usize {
+            canvas
+                .chunks_exact(4)
+                .filter(|px| px[2] > 128 && px[0] < 80 && px[1] < 80)
+                .count()
+        }
+
+        let mut quiet = vec![0; (WIDTH * HEIGHT * 4) as usize];
+        let mut loud = vec![0; (WIDTH * HEIGHT * 4) as usize];
+        draw_overlay(&mut quiet, WIDTH, HEIGHT, State::Recording, 0, 0.0, 1.0);
+        draw_overlay(&mut loud, WIDTH, HEIGHT, State::Recording, 0, 1.0, 1.0);
+        let count_quiet = red_pixels(&quiet);
+        let count_loud = red_pixels(&loud);
+        assert!(
+            count_loud > count_quiet,
+            "loud audio should fill more bar area than silence (silence={count_quiet}, loud={count_loud})"
+        );
     }
 }
