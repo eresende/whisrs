@@ -717,11 +717,7 @@ async fn handle_toggle(
                     }
                 };
 
-                let config = TranscriptionConfig {
-                    language: context.config.general.language.clone(),
-                    model: get_model_for_backend(&context.config),
-                    prompt: vocabulary_prompt(&context.config.general.vocabulary),
-                };
+                let config = build_transcription_config(&context.config);
 
                 let backend = Arc::clone(&context.transcription_backend);
                 let wid = window_id.clone();
@@ -1125,11 +1121,7 @@ async fn process_recording_batch(
     let wav_data = encode_wav(&samples)?;
     info!("encoded WAV: {} bytes", wav_data.len());
 
-    let config = TranscriptionConfig {
-        language: context.config.general.language.clone(),
-        model: get_model_for_backend(&context.config),
-        prompt: vocabulary_prompt(&context.config.general.vocabulary),
-    };
+    let config = build_transcription_config(&context.config);
 
     let text = match context
         .transcription_backend
@@ -1270,6 +1262,14 @@ fn type_text_at_cursor(text: &str) -> Result<()> {
 
     keyboard.type_text(text).context("failed to type text")?;
     Ok(())
+}
+
+fn build_transcription_config(config: &Config) -> TranscriptionConfig {
+    TranscriptionConfig {
+        language: config.general.language.clone(),
+        model: get_model_for_backend(config),
+        prompt: vocabulary_prompt(&config.general.vocabulary),
+    }
 }
 
 /// Build a prompt string from custom vocabulary words.
