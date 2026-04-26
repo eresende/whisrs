@@ -1268,20 +1268,25 @@ fn build_transcription_config(config: &Config) -> TranscriptionConfig {
     TranscriptionConfig {
         language: config.general.language.clone(),
         model: get_model_for_backend(config),
-        prompt: vocabulary_prompt(&config.general.vocabulary),
+        prompt: transcription_prompt(config.general.prompt.as_deref(), &config.general.vocabulary),
     }
 }
 
-/// Build a prompt string from custom vocabulary words.
-///
-/// Returns `None` if vocabulary is empty. The prompt is formatted as a
-/// comma-separated list which nudges the transcription model to recognise
-/// these terms.
-fn vocabulary_prompt(vocabulary: &[String]) -> Option<String> {
-    if vocabulary.is_empty() {
+/// Joins `prompt` and `vocabulary` with `". "`, prompt first. Blank prompts
+/// are treated as absent; returns `None` only when both inputs are empty so
+/// backends skip the hint entirely rather than receiving an empty string.
+fn transcription_prompt(prompt: Option<&str>, vocabulary: &[String]) -> Option<String> {
+    let prompt = prompt.map(str::trim).filter(|s| !s.is_empty());
+    let vocab = if vocabulary.is_empty() {
         None
     } else {
         Some(vocabulary.join(", "))
+    };
+    match (prompt, vocab) {
+        (Some(p), Some(v)) => Some(format!("{p}. {v}")),
+        (Some(p), None) => Some(p.to_string()),
+        (None, Some(v)) => Some(v),
+        (None, None) => None,
     }
 }
 
