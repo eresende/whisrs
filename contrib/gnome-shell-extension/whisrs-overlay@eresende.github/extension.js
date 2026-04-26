@@ -11,12 +11,12 @@ const DBUS_PATH = '/org/whisrs/Overlay';
 const STATE_SIGNAL = 'StateChanged';
 const LEVEL_SIGNAL = 'LevelChanged';
 
-const OVERLAY_WIDTH = 140;
-const OVERLAY_HEIGHT = 28;
-const BOTTOM_MARGIN = 22;
+const OVERLAY_WIDTH = 110;
+const OVERLAY_HEIGHT = 40;
+const BOTTOM_MARGIN = 24;
 const BAR_COUNT = 5;
-const BAR_BASELINE = 3;
-const BAR_MAX_H = 18;
+const BAR_BASELINE = 4;
+const BAR_MAX_H = 28;
 
 export default class WhisrsOverlayExtension extends Extension {
     enable() {
@@ -26,8 +26,6 @@ export default class WhisrsOverlayExtension extends Extension {
             reactive: false,
             visible: false,
         });
-
-        this._dot = new St.Widget({style_class: 'whisrs-overlay-dot'});
 
         this._barsBox = new St.BoxLayout({
             style_class: 'whisrs-overlay-bars',
@@ -44,7 +42,6 @@ export default class WhisrsOverlayExtension extends Extension {
             this._barsBox.add_child(bar);
         }
 
-        this._actor.add_child(this._dot);
         this._actor.add_child(this._barsBox);
         Main.uiGroup.add_child(this._actor);
 
@@ -98,7 +95,6 @@ export default class WhisrsOverlayExtension extends Extension {
         this._actor = null;
         this._bars = [];
         this._barsBox = null;
-        this._dot = null;
     }
 
     _setState(state) {
@@ -144,14 +140,12 @@ export default class WhisrsOverlayExtension extends Extension {
         this._actor.set_size(OVERLAY_WIDTH, OVERLAY_HEIGHT);
 
         const cy = Math.floor(OVERLAY_HEIGHT / 2);
-        if (this._dot) {
-            this._dot.set_position(10, cy - 3);
-            this._dot.set_size(6, 6);
-        }
         if (this._barsBox) {
-            const barsX = 26;
+            // 5 bars × 4px wide + 4 gaps × 3px = 32px, centered.
+            const barBlock = BAR_COUNT * 4 + (BAR_COUNT - 1) * 3;
+            const barsX = Math.floor((OVERLAY_WIDTH - barBlock) / 2);
             this._barsBox.set_position(barsX, cy - Math.floor(BAR_MAX_H / 2));
-            this._barsBox.set_size(OVERLAY_WIDTH - barsX - 8, BAR_MAX_H);
+            this._barsBox.set_size(barBlock, BAR_MAX_H);
         }
     }
 

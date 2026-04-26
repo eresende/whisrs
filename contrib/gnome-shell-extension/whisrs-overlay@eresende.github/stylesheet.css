@@ -1,7 +1,15 @@
+/* whisrs brand:
+ *   bg            #161420 (dark slate w/ purple tint)
+ *   ring accent   #6C3FC5 (deep purple, brand primary)
+ *   recording     #A3E635 (terminal green)
+ *   transcribing  #6C3FC5 (deep purple)
+ */
+
 .whisrs-overlay {
   border-radius: 999px;
-  background-color: rgba(18, 20, 24, 0.92);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  background-color: rgba(22, 20, 32, 0.94);
+  border: 1px solid rgba(108, 63, 197, 0.28);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   transition-duration: 60ms;
 }
 
@@ -9,31 +17,20 @@
   opacity: 0;
 }
 
-/* Status dot */
-.whisrs-overlay-dot {
-  border-radius: 999px;
-  background-color: #ef4444;
-}
-
-.whisrs-overlay-transcribing .whisrs-overlay-dot {
-  background-color: #60a5fa;
-}
-
-/* Bars */
 .whisrs-overlay-bars {
-  spacing: 4px;
+  spacing: 3px;
   align-items: center;
 }
 
 .whisrs-overlay-bar {
-  width: 6px;
-  border-radius: 3px;
-  background-color: #ef4444;
-  height: 3px;
-  min-height: 3px;
-  max-height: 18px;
+  width: 4px;
+  border-radius: 2px;
+  background-color: #a3e635;
+  height: 4px;
+  min-height: 4px;
+  max-height: 28px;
 }
 
 .whisrs-overlay-transcribing .whisrs-overlay-bar {
-  background-color: #60a5fa;
+  background-color: #6c3fc5;
 }

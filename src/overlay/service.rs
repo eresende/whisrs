@@ -46,9 +46,9 @@ use wayland_client::{
 
 use crate::State;
 
-const WIDTH: u32 = 140;
-const HEIGHT: u32 = 28;
-const BOTTOM_MARGIN: i32 = 22;
+const WIDTH: u32 = 110;
+const HEIGHT: u32 = 40;
+const BOTTOM_MARGIN: i32 = 24;
 const FADE_STEP: f32 = 0.55;
 
 /// Spawn the bottom recording overlay.
@@ -467,22 +467,43 @@ fn draw_overlay(
         return;
     }
 
-    let bg = scale_alpha([235, 18, 20, 24], alpha);
+    // Brand palette: dark slate with a hint of purple, terminal green for
+    // recording, deep purple for transcribing.
+    let bg = scale_alpha([240, 22, 20, 32], alpha);
+    let inner_glow = scale_alpha([60, 108, 63, 197], alpha);
     let accent = match state {
-        State::Recording => scale_alpha([255, 239, 68, 68], alpha),
-        State::Transcribing => scale_alpha([255, 96, 165, 250], alpha),
+        State::Recording => scale_alpha([255, 163, 230, 53], alpha),
+        State::Transcribing => scale_alpha([255, 108, 63, 197], alpha),
         State::Idle => return,
     };
 
     let radius = height / 2;
     rounded_rect(canvas, width, height, 0, 0, width, height, radius, bg);
-
-    let cy = height / 2;
-    let dot_pulse = match state {
-        State::Recording => (((frame as f32 / 12.0).sin() + 1.0) * 0.5 * 1.0) as i32,
-        _ => 0,
-    };
-    circle(canvas, width, height, 14, cy, 3 + dot_pulse, accent);
+    // Subtle purple inner ring as a brand accent — barely visible, just enough
+    // to lift the pill out of pure flat black.
+    rounded_rect(
+        canvas,
+        width,
+        height,
+        1,
+        1,
+        width - 2,
+        height - 2,
+        radius - 1,
+        inner_glow,
+    );
+    // Restore the bg one pixel in so we end up with a 1px purple ring.
+    rounded_rect(
+        canvas,
+        width,
+        height,
+        2,
+        2,
+        width - 4,
+        height - 4,
+        radius - 2,
+        bg,
+    );
 
     match state {
         State::Recording => draw_bars(canvas, width, height, accent, frame, level),
@@ -544,11 +565,13 @@ fn scale_alpha(color: [u8; 4], alpha: f32) -> [u8; 4] {
 }
 
 const BAR_COUNT: u32 = 5;
-const BAR_W: u32 = 6;
-const BAR_X_START: u32 = 30;
-const BAR_PITCH: u32 = 22;
-const BAR_BASELINE: i32 = 3;
-const BAR_MAX_H: i32 = 18;
+const BAR_W: u32 = 4;
+const BAR_GAP: u32 = 3;
+const BAR_PITCH: u32 = BAR_W + BAR_GAP;
+const BAR_BLOCK_W: u32 = BAR_COUNT * BAR_W + (BAR_COUNT - 1) * BAR_GAP;
+const BAR_X_START: u32 = (WIDTH - BAR_BLOCK_W) / 2;
+const BAR_BASELINE: i32 = 4;
+const BAR_MAX_H: i32 = 28;
 
 fn draw_bars(canvas: &mut [u8], width: u32, height: u32, color: [u8; 4], frame: u32, level: f32) {
     let cy = (height / 2) as i32;
@@ -562,7 +585,7 @@ fn draw_bars(canvas: &mut [u8], width: u32, height: u32, color: [u8; 4], frame: 
             .max(BAR_BASELINE as f32) as i32;
         let bx = BAR_X_START + i * BAR_PITCH;
         let by = (cy - h / 2).max(0) as u32;
-        rounded_rect(canvas, width, height, bx, by, BAR_W, h as u32, 3, color);
+        rounded_rect(canvas, width, height, bx, by, BAR_W, h as u32, 2, color);
     }
 }
 
@@ -590,19 +613,7 @@ fn draw_sweep(canvas: &mut [u8], width: u32, height: u32, color: [u8; 4], frame:
         let h = h.max(BAR_BASELINE);
         let bx = BAR_X_START + i * BAR_PITCH;
         let by = (cy - h / 2).max(0) as u32;
-        rounded_rect(canvas, width, height, bx, by, BAR_W, h as u32, 3, bar_color);
-    }
-}
-
-fn circle(canvas: &mut [u8], width: u32, height: u32, cx: u32, cy: u32, r: i32, color: [u8; 4]) {
-    for y in cy.saturating_sub(r as u32)..=(cy + r as u32).min(height.saturating_sub(1)) {
-        for x in cx.saturating_sub(r as u32)..=(cx + r as u32).min(width.saturating_sub(1)) {
-            let dx = x as i32 - cx as i32;
-            let dy = y as i32 - cy as i32;
-            if dx * dx + dy * dy <= r * r {
-                blend_pixel(canvas, width, height, x, y, color);
-            }
-        }
+        rounded_rect(canvas, width, height, bx, by, BAR_W, h as u32, 2, bar_color);
     }
 }
 
@@ -642,14 +653,14 @@ mod tests {
 
     #[test]
     fn silence_draws_minimal_baseline() {
-        // Bar color (red) overdraws the dark background; counting red-dominant
-        // pixels measures bar area regardless of the underlying pill.
-        // ARGB color is stored on disk as little-endian B,G,R,A — so the
-        // canvas byte layout is [B, G, R, A] per pixel.
-        fn red_pixels(canvas: &[u8]) -> usize {
+        // Bar color (terminal green, brand accent) overdraws the dark pill;
+        // counting green-dominant pixels measures bar area regardless of the
+        // underlying background. ARGB on disk is little-endian B,G,R,A — so
+        // each pixel reads as [B, G, R, A].
+        fn green_pixels(canvas: &[u8]) -> usize {
             canvas
                 .chunks_exact(4)
-                .filter(|px| px[2] > 128 && px[0] < 80 && px[1] < 80)
+                .filter(|px| px[1] > 180 && px[2] < 200 && px[0] < 100)
                 .count()
         }
 
@@ -657,8 +668,8 @@ mod tests {
         let mut loud = vec![0; (WIDTH * HEIGHT * 4) as usize];
         draw_overlay(&mut quiet, WIDTH, HEIGHT, State::Recording, 0, 0.0, 1.0);
         draw_overlay(&mut loud, WIDTH, HEIGHT, State::Recording, 0, 1.0, 1.0);
-        let count_quiet = red_pixels(&quiet);
-        let count_loud = red_pixels(&loud);
+        let count_quiet = green_pixels(&quiet);
+        let count_loud = green_pixels(&loud);
         assert!(
             count_loud > count_quiet,
             "loud audio should fill more bar area than silence (silence={count_quiet}, loud={count_loud})"
