@@ -115,7 +115,7 @@ pub fn run_setup() -> Result<()> {
     let (remove_filler_words, audio_feedback) = configure_extras()?;
 
     // 5b. Bottom recording overlay.
-    let overlay = configure_overlay();
+    let (overlay, overlay_config) = configure_overlay();
 
     // 6. Command mode LLM (optional).
     let llm_config = configure_llm()?;
@@ -146,6 +146,7 @@ pub fn run_setup() -> Result<()> {
         local_parakeet: None,
         llm: llm_config,
         hotkeys: None,
+        overlay: if overlay { overlay_config } else { None },
     };
 
     let config_path = write_config(&config)?;
@@ -1080,7 +1081,7 @@ fn configure_extras() -> Result<(bool, bool)> {
 
 /// Ask the user whether to enable the bottom recording overlay, and on GNOME
 /// offer to install the bundled Shell extension that renders it.
-fn configure_overlay() -> bool {
+fn configure_overlay() -> (bool, Option<crate::OverlayConfig>) {
     println!("\n{BOLD}Recording overlay (optional)...{RESET}");
     println!("  {DIM}A small audio meter at the bottom of the screen while recording.{RESET}");
 
@@ -1091,15 +1092,43 @@ fn configure_overlay() -> bool {
         .unwrap_or(false);
 
     if !enable {
-        return false;
+        return (false, None);
     }
+
+    let theme = pick_overlay_theme();
 
     if detect_compositor().as_deref() == Some("gnome") {
         offer_install_gnome_extension();
     }
 
-    println!("  {GREEN}Overlay enabled{RESET}");
-    true
+    println!("  {GREEN}Overlay enabled (theme: {theme}){RESET}");
+    let cfg = crate::OverlayConfig {
+        theme,
+        ..crate::OverlayConfig::default()
+    };
+    (true, Some(cfg))
+}
+
+/// Theme picker for the overlay. Always returns a named theme — "custom" is
+/// left for power users to set in config.toml.
+fn pick_overlay_theme() -> String {
+    println!();
+    let selection = Select::new()
+        .with_prompt("Pick an overlay theme")
+        .items(&[
+            "Ember   — warm amber \"tally light\" (recommended)",
+            "Carbon  — monochrome, terminal-clean",
+            "Cyan    — electric blue, audio-equipment vibe",
+        ])
+        .default(0)
+        .interact()
+        .unwrap_or(0);
+
+    match selection {
+        1 => "carbon".to_string(),
+        2 => "cyan".to_string(),
+        _ => "ember".to_string(),
+    }
 }
 
 /// On GNOME, offer to copy the bundled Shell extension into the user's

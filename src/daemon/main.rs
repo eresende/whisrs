@@ -122,6 +122,7 @@ fn load_config() -> (Config, Option<String>) {
                             local_parakeet: None,
                             llm: None,
                             hotkeys: None,
+                            overlay: None,
                         },
                         Some(msg),
                     );
@@ -145,6 +146,7 @@ fn load_config() -> (Config, Option<String>) {
                         local_parakeet: None,
                         llm: None,
                         hotkeys: None,
+                        overlay: None,
                     },
                     Some(msg),
                 );
@@ -168,6 +170,7 @@ fn load_config() -> (Config, Option<String>) {
             local_parakeet: None,
             llm: None,
             hotkeys: None,
+            overlay: None,
         },
         None,
     )
@@ -544,6 +547,7 @@ async fn main() -> Result<()> {
 
     let tray_enabled = config.general.tray;
     let overlay_enabled = config.general.overlay;
+    let overlay_config = config.overlay.clone().unwrap_or_default();
     let context = Arc::new(DaemonContext {
         config,
         window_tracker,
@@ -562,7 +566,11 @@ async fn main() -> Result<()> {
     // Start bottom recording overlay if enabled.
     // Spawned as a background task so desktop integration failures do not stop the daemon.
     if overlay_enabled {
-        tokio::spawn(whisrs::overlay::spawn_overlay(state_rx, overlay_level_rx));
+        tokio::spawn(whisrs::overlay::spawn_overlay(
+            state_rx,
+            overlay_level_rx,
+            overlay_config,
+        ));
     }
 
     let sock_path = socket_path();

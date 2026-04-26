@@ -44,12 +44,110 @@ use wayland_client::{
     Connection, Dispatch, QueueHandle,
 };
 
-use crate::State;
+use crate::{OverlayConfig, State};
 
-const WIDTH: u32 = 110;
-const HEIGHT: u32 = 40;
-const BOTTOM_MARGIN: i32 = 24;
+const BOTTOM_MARGIN: i32 = 16;
 const FADE_STEP: f32 = 0.55;
+
+// Bar layout — fixed for visual consistency. 18 bars × 2 px + 17 gaps × 2 px
+// = 70 px wide, centered in the pill (15 px side margin at default 100 px).
+const BAR_COUNT: u32 = 18;
+const BAR_W: u32 = 2;
+const BAR_GAP: u32 = 2;
+const BAR_PITCH: u32 = BAR_W + BAR_GAP;
+const BAR_BLOCK_W: u32 = BAR_COUNT * BAR_W + (BAR_COUNT - 1) * BAR_GAP;
+const BAR_BASELINE: i32 = 2;
+
+/// Color palette for one overlay theme. Bytes are stored as `[A, R, G, B]`,
+/// matching the canvas pixel layout used by [`blend_pixel`].
+#[derive(Debug, Clone, Copy)]
+struct Theme {
+    bg: [u8; 4],
+    ring: [u8; 4],
+    rec_bar: [u8; 4],
+    trans_bar: [u8; 4],
+    glow: [u8; 4],
+}
+
+impl Theme {
+    /// Default palette — warm "tally light" amber on near-black slate.
+    const fn ember() -> Self {
+        Self {
+            bg: [235, 14, 14, 16],           // #0E0E10 @ 92%
+            ring: [64, 249, 115, 22],        // #F97316 @ 25%
+            rec_bar: [255, 249, 115, 22],    // #F97316
+            trans_bar: [255, 240, 237, 245], // #F0EDF5
+            glow: [60, 249, 115, 22],
+        }
+    }
+
+    /// Monochrome terminal palette — subdued, never distracting.
+    const fn carbon() -> Self {
+        Self {
+            bg: [235, 14, 14, 16],
+            ring: [80, 58, 58, 64],          // hairline gray
+            rec_bar: [255, 240, 237, 245],   // soft white
+            trans_bar: [255, 156, 163, 175], // warm gray
+            glow: [40, 240, 237, 245],
+        }
+    }
+
+    /// Cool electric-blue palette — audio-equipment vibe.
+    const fn cyan() -> Self {
+        Self {
+            bg: [235, 10, 15, 20],
+            ring: [64, 34, 211, 238], // #22D3EE @ 25%
+            rec_bar: [255, 34, 211, 238],
+            trans_bar: [255, 56, 189, 248], // #38BDF8
+            glow: [50, 34, 211, 238],
+        }
+    }
+
+    fn from_config(cfg: &OverlayConfig) -> Self {
+        let base = match cfg.theme.as_str() {
+            "carbon" => Self::carbon(),
+            "cyan" => Self::cyan(),
+            "ember" | "custom" => Self::ember(),
+            other => {
+                warn!("unknown overlay theme {other:?}, falling back to ember");
+                Self::ember()
+            }
+        };
+        if cfg.theme != "custom" {
+            return base;
+        }
+        let Some(c) = cfg.colors.as_ref() else {
+            return base;
+        };
+        Self {
+            bg: c
+                .background
+                .as_deref()
+                .and_then(crate::parse_hex_color)
+                .unwrap_or(base.bg),
+            ring: c
+                .ring
+                .as_deref()
+                .and_then(crate::parse_hex_color)
+                .unwrap_or(base.ring),
+            rec_bar: c
+                .recording
+                .as_deref()
+                .and_then(crate::parse_hex_color)
+                .unwrap_or(base.rec_bar),
+            trans_bar: c
+                .transcribing
+                .as_deref()
+                .and_then(crate::parse_hex_color)
+                .unwrap_or(base.trans_bar),
+            glow: c
+                .glow
+                .as_deref()
+                .and_then(crate::parse_hex_color)
+                .unwrap_or(base.glow),
+        }
+    }
+}
 
 /// Spawn the bottom recording overlay.
 ///
@@ -59,11 +157,13 @@ const FADE_STEP: f32 = 0.55;
 pub async fn spawn_overlay(
     mut state_rx: watch::Receiver<State>,
     mut level_rx: watch::Receiver<f32>,
+    config: OverlayConfig,
 ) {
     let gnome_state_rx = state_rx.clone();
     let gnome_level_rx = level_rx.clone();
+    let gnome_theme = config.theme.clone();
     tokio::spawn(async move {
-        if let Err(e) = run_gnome_broadcaster(gnome_state_rx, gnome_level_rx).await {
+        if let Err(e) = run_gnome_broadcaster(gnome_state_rx, gnome_level_rx, gnome_theme).await {
             warn!("GNOME overlay D-Bus broadcaster unavailable: {e:#}");
         }
     });
@@ -71,10 +171,11 @@ pub async fn spawn_overlay(
     let (tx, rx) = mpsc::channel::<State>();
     let (level_tx, level_rx_thread) = mpsc::channel::<f32>();
 
+    let overlay_config = config;
     std::thread::Builder::new()
         .name("whisrs-overlay".to_string())
         .spawn(move || {
-            if let Err(e) = run_overlay(rx, level_rx_thread) {
+            if let Err(e) = run_overlay(rx, level_rx_thread, overlay_config) {
                 warn!("overlay unavailable: {e:#}");
             }
         })
@@ -102,7 +203,16 @@ pub async fn spawn_overlay(
 async fn run_gnome_broadcaster(
     mut state_rx: watch::Receiver<State>,
     level_rx: watch::Receiver<f32>,
+    theme: String,
 ) -> Result<(), OverlayError> {
+    // Custom themes don't sync over D-Bus for v1 — the GNOME extension only
+    // knows the named themes it ships. Fall back to "ember" so the bar
+    // colors remain sensible.
+    let advertised_theme = match theme.as_str() {
+        "carbon" | "cyan" | "ember" => theme.clone(),
+        _ => "ember".to_string(),
+    };
+
     let conn = zbus::connection::Builder::session()?
         .serve_at("/org/whisrs/Overlay", GnomeOverlayBus)?
         .name("org.whisrs.Overlay")?
@@ -110,6 +220,7 @@ async fn run_gnome_broadcaster(
         .await?;
 
     info!("GNOME overlay D-Bus broadcaster started");
+    emit_gnome_theme(&conn, &advertised_theme).await?;
     let initial_state = *state_rx.borrow();
     emit_gnome_state(&conn, initial_state).await?;
     let initial_level = *level_rx.borrow();
@@ -161,6 +272,17 @@ async fn emit_gnome_level(conn: &zbus::Connection, level: f32) -> zbus::Result<(
     .await
 }
 
+async fn emit_gnome_theme(conn: &zbus::Connection, theme: &str) -> zbus::Result<()> {
+    conn.emit_signal(
+        None::<&str>,
+        "/org/whisrs/Overlay",
+        "org.whisrs.Overlay",
+        "ThemeChanged",
+        &theme,
+    )
+    .await
+}
+
 struct GnomeOverlayBus;
 
 #[zbus::interface(name = "org.whisrs.Overlay")]
@@ -173,7 +295,12 @@ impl GnomeOverlayBus {
 fn run_overlay(
     state_rx: mpsc::Receiver<State>,
     level_rx: mpsc::Receiver<f32>,
+    config: OverlayConfig,
 ) -> Result<(), OverlayError> {
+    let width = config.clamped_width();
+    let height = config.clamped_height();
+    let theme = Theme::from_config(&config);
+
     let conn = Connection::connect_to_env()?;
     let (globals, mut event_queue) = registry_queue_init(&conn)?;
     let qh = event_queue.handle();
@@ -189,7 +316,7 @@ fn run_overlay(
     layer.set_margin(0, 0, BOTTOM_MARGIN, 0);
     layer.set_exclusive_zone(0);
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-    layer.set_size(WIDTH, HEIGHT);
+    layer.set_size(width, height);
 
     // Make the transparent overlay non-interactive so it never blocks clicks.
     let input_region = compositor.wl_compositor().create_region(&qh, ());
@@ -198,7 +325,7 @@ fn run_overlay(
 
     layer.commit();
 
-    let pool = SlotPool::new((WIDTH * HEIGHT * 4) as usize, &shm)?;
+    let pool = SlotPool::new((width * height * 4) as usize, &shm)?;
     let mut overlay = Overlay {
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
@@ -209,13 +336,14 @@ fn run_overlay(
         level_rx,
         exit: false,
         first_configure: true,
-        width: WIDTH,
-        height: HEIGHT,
+        width,
+        height,
         target_state: State::Idle,
         visible_state: State::Idle,
         alpha: 0.0,
         frame: 0,
         level: 0.0,
+        theme,
     };
 
     info!("recording overlay started");
@@ -244,6 +372,7 @@ struct Overlay {
     alpha: f32,
     frame: u32,
     level: f32,
+    theme: Theme,
 }
 
 impl Overlay {
@@ -300,6 +429,7 @@ impl Overlay {
             self.frame,
             self.level,
             self.alpha,
+            &self.theme,
         );
         self.frame = self.frame.wrapping_add(1);
 
@@ -410,8 +540,8 @@ impl LayerShellHandler for Overlay {
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        self.width = configure.new_size.0.max(WIDTH);
-        self.height = configure.new_size.1.max(HEIGHT);
+        self.width = configure.new_size.0.max(self.width);
+        self.height = configure.new_size.1.max(self.height);
 
         if self.first_configure {
             self.first_configure = false;
@@ -452,6 +582,7 @@ impl ProvidesRegistryState for Overlay {
     registry_handlers![OutputState];
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_overlay(
     canvas: &mut [u8],
     width: u32,
@@ -460,6 +591,7 @@ fn draw_overlay(
     frame: u32,
     level: f32,
     alpha: f32,
+    theme: &Theme,
 ) {
     clear(canvas);
 
@@ -467,49 +599,57 @@ fn draw_overlay(
         return;
     }
 
-    // Brand palette: dark slate with a hint of purple, terminal green for
-    // recording, deep purple for transcribing.
-    let bg = scale_alpha([240, 22, 20, 32], alpha);
-    let inner_glow = scale_alpha([60, 108, 63, 197], alpha);
-    let accent = match state {
-        State::Recording => scale_alpha([255, 163, 230, 53], alpha),
-        State::Transcribing => scale_alpha([255, 108, 63, 197], alpha),
-        State::Idle => return,
-    };
+    let bg = scale_alpha(theme.bg, alpha);
+    let ring = scale_alpha(theme.ring, alpha);
 
+    // Pill background.
     let radius = height / 2;
     rounded_rect(canvas, width, height, 0, 0, width, height, radius, bg);
-    // Subtle purple inner ring as a brand accent — barely visible, just enough
-    // to lift the pill out of pure flat black.
-    rounded_rect(
-        canvas,
-        width,
-        height,
-        1,
-        1,
-        width - 2,
-        height - 2,
-        radius - 1,
-        inner_glow,
-    );
-    // Restore the bg one pixel in so we end up with a 1px purple ring.
-    rounded_rect(
-        canvas,
-        width,
-        height,
-        2,
-        2,
-        width - 4,
-        height - 4,
-        radius - 2,
-        bg,
-    );
+    // 1 px inner ring: paint a slightly inset rect in the ring color, then
+    // re-paint the further-inset interior with the bg color. The result is a
+    // thin colored band hugging the pill edge.
+    if width > 4 && height > 4 {
+        rounded_rect(
+            canvas,
+            width,
+            height,
+            1,
+            1,
+            width - 2,
+            height - 2,
+            radius.saturating_sub(1).max(1),
+            ring,
+        );
+        rounded_rect(
+            canvas,
+            width,
+            height,
+            2,
+            2,
+            width - 4,
+            height - 4,
+            radius.saturating_sub(2).max(1),
+            bg,
+        );
+    }
 
     match state {
-        State::Recording => draw_bars(canvas, width, height, accent, frame, level),
-        State::Transcribing => draw_sweep(canvas, width, height, accent, frame),
+        State::Recording => draw_bars(canvas, width, height, theme, frame, level, alpha),
+        State::Transcribing => draw_sweep(canvas, width, height, theme, frame, alpha),
         State::Idle => {}
     }
+}
+
+/// Gaussian taper across the bar row — center bars draw at ~100 % of their
+/// dynamic height, edges fall off to ~37 %. `i` is the bar index, `count`
+/// the total bar count.
+fn taper_factor(i: u32, count: u32) -> f32 {
+    if count <= 1 {
+        return 1.0;
+    }
+    let center = (count as f32 - 1.0) / 2.0;
+    let d = (i as f32 - center) / center; // -1..=1
+    (-d * d).exp() // exp(-1) ≈ 0.367 at edges
 }
 
 fn clear(canvas: &mut [u8]) {
@@ -564,56 +704,120 @@ fn scale_alpha(color: [u8; 4], alpha: f32) -> [u8; 4] {
     [a, color[1], color[2], color[3]]
 }
 
-const BAR_COUNT: u32 = 5;
-const BAR_W: u32 = 4;
-const BAR_GAP: u32 = 3;
-const BAR_PITCH: u32 = BAR_W + BAR_GAP;
-const BAR_BLOCK_W: u32 = BAR_COUNT * BAR_W + (BAR_COUNT - 1) * BAR_GAP;
-const BAR_X_START: u32 = (WIDTH - BAR_BLOCK_W) / 2;
-const BAR_BASELINE: i32 = 4;
-const BAR_MAX_H: i32 = 28;
+/// Vertical padding inside the pill (top + bottom). Bars never reach the
+/// pill edge.
+const BAR_VPAD: i32 = 5;
 
-fn draw_bars(canvas: &mut [u8], width: u32, height: u32, color: [u8; 4], frame: u32, level: f32) {
+/// Recording bars: react to audio level, gaussian taper across the row, soft
+/// glow halo behind each bar at higher amplitudes.
+fn draw_bars(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    theme: &Theme,
+    frame: u32,
+    level: f32,
+    alpha: f32,
+) {
     let cy = (height / 2) as i32;
+    let max_h = (height as i32 - BAR_VPAD * 2).max(BAR_BASELINE + 2);
+    let bar_x_start = (width.saturating_sub(BAR_BLOCK_W)) / 2;
+
     for i in 0..BAR_COUNT {
-        let variance = 0.7 + (i as f32 * 1.7).sin() * 0.3;
-        let phase = ((frame as f32 / 6.0) + i as f32 * 0.9).sin().abs();
-        let effective = (level * variance).clamp(0.0, 1.0);
-        let dynamic = effective * (0.6 + 0.4 * phase);
-        let h = (BAR_BASELINE as f32 + dynamic * (BAR_MAX_H - BAR_BASELINE) as f32)
+        let taper = taper_factor(i, BAR_COUNT);
+        // Per-bar phase keeps movement organic instead of marching in lockstep.
+        let phase = ((frame as f32 / 5.0) + i as f32 * 0.7).sin().abs();
+        let effective = (level * taper).clamp(0.0, 1.0);
+        let dynamic = effective * (0.7 + 0.3 * phase);
+        let h = (BAR_BASELINE as f32 + dynamic * (max_h - BAR_BASELINE) as f32)
             .round()
             .max(BAR_BASELINE as f32) as i32;
-        let bx = BAR_X_START + i * BAR_PITCH;
+        let bx = bar_x_start + i * BAR_PITCH;
         let by = (cy - h / 2).max(0) as u32;
-        rounded_rect(canvas, width, height, bx, by, BAR_W, h as u32, 2, color);
+
+        // Glow halo behind the bar — only visible above a small threshold.
+        if effective > 0.02 {
+            let glow_intensity = (effective * 0.9 + 0.1).clamp(0.0, 1.0);
+            let glow_a = (theme.glow[0] as f32 * glow_intensity * alpha).round() as u8;
+            let glow_color = [glow_a, theme.glow[1], theme.glow[2], theme.glow[3]];
+            let glow_w = BAR_W + 2;
+            let glow_h = (h + 2).max(BAR_BASELINE + 2) as u32;
+            let glow_x = bx.saturating_sub(1);
+            let glow_y = ((cy - glow_h as i32 / 2).max(0)) as u32;
+            rounded_rect(
+                canvas,
+                width,
+                height,
+                glow_x,
+                glow_y,
+                glow_w,
+                glow_h,
+                glow_w / 2,
+                glow_color,
+            );
+        }
+
+        let bar_color = scale_alpha(theme.rec_bar, alpha);
+        rounded_rect(
+            canvas,
+            width,
+            height,
+            bx,
+            by,
+            BAR_W,
+            h as u32,
+            BAR_W / 2,
+            bar_color,
+        );
     }
 }
 
-fn draw_sweep(canvas: &mut [u8], width: u32, height: u32, color: [u8; 4], frame: u32) {
+/// Transcribing state: no audio level, just a center-out shimmer that travels
+/// across the bar row to communicate "working on it" without flat staticness.
+fn draw_sweep(canvas: &mut [u8], width: u32, height: u32, theme: &Theme, frame: u32, alpha: f32) {
     let cy = (height / 2) as i32;
+    let max_h = (height as i32 - BAR_VPAD * 2).max(BAR_BASELINE + 2);
+    let bar_x_start = (width.saturating_sub(BAR_BLOCK_W)) / 2;
+
+    // Sliding focus point that pings back and forth across the row.
     let cycle = (BAR_COUNT as i32) * 2 - 2;
-    let pos = ((frame / 4) as i32) % cycle.max(1);
+    let pos = ((frame / 3) as i32) % cycle.max(1);
     let active = if pos < BAR_COUNT as i32 {
-        pos
+        pos as f32
     } else {
-        cycle - pos
+        (cycle - pos) as f32
     };
+
     for i in 0..BAR_COUNT {
-        let dist = (i as i32 - active).abs() as f32;
-        let intensity = (1.0 - dist / 2.5).max(0.18);
-        let bar_color = [
-            (color[0] as f32 * intensity).round() as u8,
-            color[1],
-            color[2],
-            color[3],
-        ];
-        let h = (BAR_BASELINE as f32
-            + (BAR_MAX_H - BAR_BASELINE) as f32 * (0.45 + 0.55 * intensity))
-            .round() as i32;
-        let h = h.max(BAR_BASELINE);
-        let bx = BAR_X_START + i * BAR_PITCH;
+        let taper = taper_factor(i, BAR_COUNT);
+        let dist = (i as f32 - active).abs();
+        // Bell-shaped intensity centered on `active`, ~3 bars wide.
+        let intensity = (-dist * dist / 4.0).exp().max(0.15);
+        let dynamic = intensity * taper;
+        let h = (BAR_BASELINE as f32 + dynamic * (max_h - BAR_BASELINE) as f32 * 0.85)
+            .round()
+            .max(BAR_BASELINE as f32) as i32;
+        let bx = bar_x_start + i * BAR_PITCH;
         let by = (cy - h / 2).max(0) as u32;
-        rounded_rect(canvas, width, height, bx, by, BAR_W, h as u32, 2, bar_color);
+
+        let bar_a = (theme.trans_bar[0] as f32 * (0.3 + 0.7 * intensity) * alpha).round() as u8;
+        let bar_color = [
+            bar_a,
+            theme.trans_bar[1],
+            theme.trans_bar[2],
+            theme.trans_bar[3],
+        ];
+        rounded_rect(
+            canvas,
+            width,
+            height,
+            bx,
+            by,
+            BAR_W,
+            h as u32,
+            BAR_W / 2,
+            bar_color,
+        );
     }
 }
 
@@ -630,46 +834,64 @@ fn blend_pixel(canvas: &mut [u8], width: u32, height: u32, x: u32, y: u32, color
 mod tests {
     use super::*;
 
+    const W: u32 = 100;
+    const H: u32 = 34;
+
     #[test]
     fn idle_draw_is_transparent() {
-        let mut canvas = vec![1; (WIDTH * HEIGHT * 4) as usize];
-        draw_overlay(&mut canvas, WIDTH, HEIGHT, State::Idle, 0, 0.0, 0.0);
+        let mut canvas = vec![1; (W * H * 4) as usize];
+        let t = Theme::ember();
+        draw_overlay(&mut canvas, W, H, State::Idle, 0, 0.0, 0.0, &t);
         assert!(canvas.iter().all(|b| *b == 0));
     }
 
     #[test]
     fn faded_out_draw_is_transparent() {
-        let mut canvas = vec![1; (WIDTH * HEIGHT * 4) as usize];
-        draw_overlay(&mut canvas, WIDTH, HEIGHT, State::Recording, 0, 1.0, 0.0);
+        let mut canvas = vec![1; (W * H * 4) as usize];
+        let t = Theme::ember();
+        draw_overlay(&mut canvas, W, H, State::Recording, 0, 1.0, 0.0, &t);
         assert!(canvas.iter().all(|b| *b == 0));
     }
 
     #[test]
     fn active_draw_has_visible_pixels() {
-        let mut canvas = vec![0; (WIDTH * HEIGHT * 4) as usize];
-        draw_overlay(&mut canvas, WIDTH, HEIGHT, State::Recording, 0, 1.0, 1.0);
+        let mut canvas = vec![0; (W * H * 4) as usize];
+        let t = Theme::ember();
+        draw_overlay(&mut canvas, W, H, State::Recording, 0, 1.0, 1.0, &t);
         assert!(canvas.chunks_exact(4).any(|px| px[3] != 0));
     }
 
     #[test]
+    fn taper_is_strongest_in_center() {
+        let center = taper_factor(BAR_COUNT / 2, BAR_COUNT);
+        let edge_left = taper_factor(0, BAR_COUNT);
+        let edge_right = taper_factor(BAR_COUNT - 1, BAR_COUNT);
+        assert!(center > edge_left);
+        assert!(center > edge_right);
+        assert!(edge_left < 0.5);
+        assert!(edge_right < 0.5);
+    }
+
+    #[test]
     fn silence_draws_minimal_baseline() {
-        // Bar color (terminal green, brand accent) overdraws the dark pill;
-        // counting green-dominant pixels measures bar area regardless of the
-        // underlying background. ARGB on disk is little-endian B,G,R,A — so
-        // each pixel reads as [B, G, R, A].
-        fn green_pixels(canvas: &[u8]) -> usize {
+        // Recording bars in the ember theme are amber (#F97316); count
+        // amber-dominant pixels to measure bar area independent of the bg
+        // pill. ARGB on disk is little-endian B,G,R,A — each pixel is
+        // [B, G, R, A].
+        fn amber_pixels(canvas: &[u8]) -> usize {
             canvas
                 .chunks_exact(4)
-                .filter(|px| px[1] > 180 && px[2] < 200 && px[0] < 100)
+                .filter(|px| px[2] > 220 && px[1] > 80 && px[1] < 180 && px[0] < 60)
                 .count()
         }
 
-        let mut quiet = vec![0; (WIDTH * HEIGHT * 4) as usize];
-        let mut loud = vec![0; (WIDTH * HEIGHT * 4) as usize];
-        draw_overlay(&mut quiet, WIDTH, HEIGHT, State::Recording, 0, 0.0, 1.0);
-        draw_overlay(&mut loud, WIDTH, HEIGHT, State::Recording, 0, 1.0, 1.0);
-        let count_quiet = green_pixels(&quiet);
-        let count_loud = green_pixels(&loud);
+        let t = Theme::ember();
+        let mut quiet = vec![0; (W * H * 4) as usize];
+        let mut loud = vec![0; (W * H * 4) as usize];
+        draw_overlay(&mut quiet, W, H, State::Recording, 0, 0.0, 1.0, &t);
+        draw_overlay(&mut loud, W, H, State::Recording, 0, 1.0, 1.0, &t);
+        let count_quiet = amber_pixels(&quiet);
+        let count_loud = amber_pixels(&loud);
         assert!(
             count_loud > count_quiet,
             "loud audio should fill more bar area than silence (silence={count_quiet}, loud={count_loud})"

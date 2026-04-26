@@ -173,6 +173,22 @@ vocabulary = ["whisrs", "Hyprland"]  # custom terms for better transcription acc
 tray = true                 # system tray icon (requires SNI host like waybar)
 overlay = false             # bottom-screen recording overlay (Hyprland/Sway, GNOME extension)
 
+# Optional — controls overlay appearance when enabled.
+# Defaults to a 100×34 pill with the "ember" theme.
+[overlay]
+theme = "ember"             # "ember" (default) | "carbon" | "cyan" | "custom"
+width = 100                 # 90..=120 (clamped)
+height = 34                 # 28..=40 (clamped)
+
+# When theme = "custom", these override the named theme. Hex strings:
+# #RGB, #RRGGBB, or #RRGGBBAA. Anything missing falls back to ember.
+# [overlay.colors]
+# background   = "#0E0E10E5"
+# ring         = "#F9731640"
+# recording    = "#F97316"
+# transcribing = "#F0EDF5"
+# glow         = "#F97316"
+
 [audio]
 device = "default"
 

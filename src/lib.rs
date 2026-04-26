@@ -101,6 +101,9 @@ pub struct Config {
     /// Global hotkey configuration.
     #[serde(default)]
     pub hotkeys: Option<HotkeyConfig>,
+    /// Overlay appearance config (theme, dimensions, optional custom colors).
+    #[serde(default)]
+    pub overlay: Option<OverlayConfig>,
 }
 
 /// Global hotkey configuration — key combos that trigger actions.
@@ -112,6 +115,101 @@ pub struct HotkeyConfig {
     pub cancel: Option<String>,
     /// Hotkey to start command mode (e.g. "Super+Shift+C").
     pub command: Option<String>,
+}
+
+/// Visual configuration for the bottom recording overlay.
+///
+/// The shape is intentionally clamped tight (90–120 × 28–40) to keep the
+/// gaussian-tapered bar layout legible. Themes pick the colors; if `colors`
+/// is set, those override the theme.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverlayConfig {
+    /// Theme name: `"ember"` (default), `"carbon"`, `"cyan"`, or `"custom"`.
+    /// Unknown values fall back to `"ember"` with a warning.
+    #[serde(default = "default_overlay_theme")]
+    pub theme: String,
+    /// Pill width in pixels (clamped to 90..=120).
+    #[serde(default = "default_overlay_width")]
+    pub width: u32,
+    /// Pill height in pixels (clamped to 28..=40).
+    #[serde(default = "default_overlay_height")]
+    pub height: u32,
+    /// Custom color overrides; honored when `theme = "custom"`.
+    /// Hex strings: `#RGB`, `#RRGGBB`, or `#RRGGBBAA`.
+    #[serde(default)]
+    pub colors: Option<OverlayColors>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverlayColors {
+    pub background: Option<String>,
+    pub ring: Option<String>,
+    pub recording: Option<String>,
+    pub transcribing: Option<String>,
+    pub glow: Option<String>,
+}
+
+fn default_overlay_theme() -> String {
+    "ember".to_string()
+}
+fn default_overlay_width() -> u32 {
+    100
+}
+fn default_overlay_height() -> u32 {
+    34
+}
+
+impl Default for OverlayConfig {
+    fn default() -> Self {
+        Self {
+            theme: default_overlay_theme(),
+            width: default_overlay_width(),
+            height: default_overlay_height(),
+            colors: None,
+        }
+    }
+}
+
+impl OverlayConfig {
+    /// Width clamped to the supported range. Out-of-range values fall back
+    /// silently to the nearest bound — we don't fail config load over UI.
+    pub fn clamped_width(&self) -> u32 {
+        self.width.clamp(90, 120)
+    }
+    pub fn clamped_height(&self) -> u32 {
+        self.height.clamp(28, 40)
+    }
+}
+
+/// Parse a hex color string into ARGB bytes `[A, R, G, B]` matching the
+/// overlay renderer's color format. Accepts `#RGB`, `#RRGGBB`, `#RRGGBBAA`.
+/// Returns `None` for malformed input so callers can fall back to a theme
+/// default.
+pub fn parse_hex_color(s: &str) -> Option<[u8; 4]> {
+    let s = s.trim().trim_start_matches('#');
+    let (r, g, b, a) = match s.len() {
+        3 => {
+            let r = u8::from_str_radix(&s[0..1].repeat(2), 16).ok()?;
+            let g = u8::from_str_radix(&s[1..2].repeat(2), 16).ok()?;
+            let b = u8::from_str_radix(&s[2..3].repeat(2), 16).ok()?;
+            (r, g, b, 255u8)
+        }
+        6 => {
+            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+            (r, g, b, 255u8)
+        }
+        8 => {
+            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+            let a = u8::from_str_radix(&s[6..8], 16).ok()?;
+            (r, g, b, a)
+        }
+        _ => return None,
+    };
+    Some([a, r, g, b])
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -647,6 +745,7 @@ mod tests {
             local_parakeet: None,
             llm: None,
             hotkeys: None,
+            overlay: None,
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("Unknown backend"));
@@ -686,6 +785,7 @@ mod tests {
             local_parakeet: None,
             llm: None,
             hotkeys: None,
+            overlay: None,
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("no API key"));
@@ -710,6 +810,7 @@ mod tests {
             local_parakeet: None,
             llm: None,
             hotkeys: None,
+            overlay: None,
         };
         let result = config.validate();
         assert!(result.is_ok());
@@ -735,6 +836,7 @@ mod tests {
             local_parakeet: None,
             llm: None,
             hotkeys: None,
+            overlay: None,
         };
         let warnings = config.validate().unwrap();
         assert!(warnings
