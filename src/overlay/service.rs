@@ -909,16 +909,28 @@ fn theme_color(bytes: [u8; 4], extra_alpha: f32) -> Color {
     .unwrap_or(Color::TRANSPARENT)
 }
 
-/// Gaussian taper across the bar row — center bars draw at ~100 % of their
-/// dynamic height, edges fall off to ~37 %. `i` is the bar index, `count`
-/// the total bar count.
+/// Wavy taper across the bar row — center bar at ~100 %, with a cosine
+/// modulation so adjacent bars alternate between "taller" and "shorter"
+/// inside a gaussian envelope. Reads as an equalizer pattern instead of
+/// a smooth bell:
+///
+/// ```text
+///   index:    0     1     2     3     4     5     6
+///   factor:  .20   .64   .45  1.00   .45   .64   .20
+///            short  tall  mid  PEAK  mid  tall  short
+/// ```
 fn taper_factor(i: u32, count: u32) -> f32 {
     if count <= 1 {
         return 1.0;
     }
     let center = (count as f32 - 1.0) / 2.0;
     let d = (i as f32 - center) / center; // -1..=1
-    (-d * d).exp() // exp(-1) ≈ 0.367 at edges
+    let envelope = (-d * d).exp(); // exp(-1) ≈ 0.367 at edges
+                                   // For odd `count`, (i - center) is integer ⇒ cos is ±1, giving a
+                                   // strict alternation. For even `count` the cos collapses to 0 and the
+                                   // factor is just the gaussian envelope, which is fine.
+    let wave = 0.75 + 0.25 * (std::f32::consts::PI * (i as f32 - center)).cos();
+    envelope * wave
 }
 
 /// Recording bars: react to audio level, gaussian taper across the row,
