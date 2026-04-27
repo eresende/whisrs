@@ -21,11 +21,11 @@
 }
 
 .whisrs-overlay-bar {
-  width: 4px;
-  border-radius: 2px;
+  width: 3px;
+  border-radius: 1.5px;
   background-color: #f0edf5;
-  height: 3px;
-  min-height: 3px;
+  height: 6px;
+  min-height: 6px;
   max-height: 28px;
 }
 

@@ -15,10 +15,10 @@ const THEME_SIGNAL = 'ThemeChanged';
 const OVERLAY_WIDTH = 100;
 const OVERLAY_HEIGHT = 40;
 const BOTTOM_MARGIN = 16;
-const BAR_COUNT = 5;
-const BAR_W = 4;
-const BAR_GAP = 3;
-const BAR_BASELINE = 3;
+const BAR_COUNT = 7;
+const BAR_W = 3;
+const BAR_GAP = 2;
+const BAR_BASELINE = 6;
 const BAR_VPAD = 6;
 
 // Spawn animation: pill height morphs from a 4-px sliver to its full
@@ -94,6 +94,8 @@ export default class WhisrsOverlayExtension extends Extension {
         this._state = 'idle';
         this._level = 0;
         this._targetLevel = 0;
+        this._levelVelocity = 0;
+        this._lastUpdateMs = 0;
         this._frame = 0;
 
         this._position();
@@ -243,16 +245,25 @@ export default class WhisrsOverlayExtension extends Extension {
     _startAnimation() {
         if (this._animationId) return;
 
-        // Envelope follower: fast attack (instant peak tracking) + slow
-        // release. Holds the bar height during speech so the bars don't
-        // bounce with every audio buffer's RMS variation.
-        this._animationId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 24, () => {
+        // Critically-damped-ish spring on the displayed level, stepped
+        // with real wall-clock dt so the time constants are real-world ms,
+        // not "per tick". Tuned to settle in ~150–200 ms with no
+        // perceptible overshoot — the bars *track* the voice rather than
+        // chase it. ~16 ms tick ≈ 60 fps.
+        const STIFFNESS = 360;
+        const DAMPING = 32;
+        this._lastUpdateMs = GLib.get_monotonic_time() / 1000;
+        this._animationId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
             this._frame++;
+            const nowMs = GLib.get_monotonic_time() / 1000;
+            const dt = Math.min(0.1, Math.max(0, (nowMs - this._lastUpdateMs) / 1000));
+            this._lastUpdateMs = nowMs;
             const target = this._targetLevel ?? 0;
-            if (target > this._level) {
-                this._level = target;
-            } else {
-                this._level = this._level * 0.85 + target * 0.15;
+            if (dt > 0) {
+                const force = (target - this._level) * STIFFNESS;
+                const drag = this._levelVelocity * DAMPING;
+                this._levelVelocity += (force - drag) * dt;
+                this._level = Math.max(0, Math.min(1, this._level + this._levelVelocity * dt));
             }
             this._updateBars();
             return GLib.SOURCE_CONTINUE;
@@ -265,13 +276,21 @@ export default class WhisrsOverlayExtension extends Extension {
             GLib.Source.remove(this._animationId);
             this._animationId = 0;
         }
+        this._levelVelocity = 0;
+        this._level = 0;
     }
 
+    /// Wavy taper across the bar row — center bar at ~100 %, with a cosine
+    /// modulation so adjacent bars alternate between "taller" and "shorter"
+    /// inside a gaussian envelope. Reads as an equalizer pattern instead
+    /// of a smooth bell.
     _taper(i) {
         if (BAR_COUNT <= 1) return 1;
         const center = (BAR_COUNT - 1) / 2;
         const d = (i - center) / center;
-        return Math.exp(-d * d);
+        const envelope = Math.exp(-d * d);
+        const wave = 0.75 + 0.25 * Math.cos(Math.PI * (i - center));
+        return envelope * wave;
     }
 
     _updateBars() {
