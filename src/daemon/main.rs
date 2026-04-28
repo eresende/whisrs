@@ -1971,4 +1971,50 @@ mod tests {
     fn truncate_empty() {
         assert_eq!(truncate_preview("", 77), "");
     }
+
+    #[test]
+    fn transcription_prompt_neither() {
+        assert_eq!(transcription_prompt(None, &[]), None);
+    }
+
+    #[test]
+    fn transcription_prompt_vocab_only() {
+        let vocab = vec!["whisrs".to_string(), "Hyprland".to_string()];
+        assert_eq!(
+            transcription_prompt(None, &vocab),
+            Some("whisrs, Hyprland".to_string())
+        );
+    }
+
+    #[test]
+    fn transcription_prompt_prose_only() {
+        assert_eq!(
+            transcription_prompt(Some("Embedded Linux dictation."), &[]),
+            Some("Embedded Linux dictation.".to_string())
+        );
+    }
+
+    #[test]
+    fn transcription_prompt_both_combined_with_separator() {
+        let vocab = vec!["whisrs".to_string(), "Hyprland".to_string()];
+        assert_eq!(
+            transcription_prompt(Some("Embedded Linux dictation"), &vocab),
+            Some("Embedded Linux dictation. whisrs, Hyprland".to_string())
+        );
+    }
+
+    #[test]
+    fn transcription_prompt_blank_prose_treated_as_absent() {
+        let vocab = vec!["whisrs".to_string()];
+        // Whitespace-only prompt must not bleed an empty "" into the output.
+        assert_eq!(
+            transcription_prompt(Some("   \t\n  "), &vocab),
+            Some("whisrs".to_string())
+        );
+    }
+
+    #[test]
+    fn transcription_prompt_empty_string_with_empty_vocab_is_none() {
+        assert_eq!(transcription_prompt(Some(""), &[]), None);
+    }
 }
