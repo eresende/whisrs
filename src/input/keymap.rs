@@ -370,6 +370,15 @@ fn build_reverse_map(keymap: &xkbcommon::xkb::Keymap) -> HashMap<char, KeyMappin
                     }),
                 },
             );
+        } else {
+            // No dead key for this accent on the active layout — `ch` will
+            // fall through to clipboard paste, which is broken in terminal
+            // emulators. Logged so a future regression on a layout that
+            // used to support this is debuggable.
+            debug!(
+                "dead-key synthesis pass 1: no `{dead_sym:#x}` on this layout; \
+                 '{ch}' will use clipboard fallback"
+            );
         }
     }
 
@@ -381,14 +390,27 @@ fn build_reverse_map(keymap: &xkbcommon::xkb::Keymap) -> HashMap<char, KeyMappin
             continue;
         }
         let Some(dk) = dead_keys.get(&dead_sym) else {
+            debug!(
+                "dead-key synthesis pass 2: no `{dead_sym:#x}` on this layout; \
+                 '{ch}' will use clipboard fallback"
+            );
             continue;
         };
         let Some(base_map) = map.get(&base).copied() else {
+            debug!(
+                "dead-key synthesis pass 2: base letter '{base}' not in keymap; \
+                 '{ch}' will use clipboard fallback"
+            );
             continue;
         };
         // Don't chain follow-taps (a base letter that is itself a
         // dead-key fallback would imply a 3-tap sequence we don't model).
         if base_map.follow.is_some() {
+            debug!(
+                "dead-key synthesis pass 2: base letter '{base}' is itself a \
+                 follow-tap mapping (would require 3-tap chain); \
+                 '{ch}' will use clipboard fallback"
+            );
             continue;
         }
         map.insert(
@@ -678,12 +700,14 @@ mod tests {
         }
     }
 
-    /// Pass 2 (accented letter via `dead_X + base_letter`): `ã` is
-    /// reachable on us:intl. Whichever route the layout exposes, the
-    /// mapping must be self-consistent: if synthesized, the follow tap
-    /// must be `a`; if direct, the main tap must hold AltGr.
+    /// Pass 2 (accented letter via `dead_X + base_letter`): `ã` is not
+    /// reachable at any level on us:intl, so it must be synthesized as
+    /// `dead_tilde + a`. This is the deterministic test that proves
+    /// Pass 2 actually fires; the Polish/Spanish tests below cover the
+    /// no-overwrite invariant for layouts that do expose the char
+    /// directly.
     #[test]
-    fn us_intl_tilde_letter_route_is_self_consistent() {
+    fn us_intl_tilde_letter_uses_dead_key_synthesis() {
         let km = XkbKeymap::from_layout(&KeyboardLayout {
             layout: "us".to_string(),
             variant: "intl".to_string(),
@@ -691,23 +715,15 @@ mod tests {
         .unwrap();
         let a_main = km.lookup('a').expect("'a' must be in keymap").main;
         let mapping = km.lookup('ã').expect("ã must be reachable on us:intl");
-        match mapping.follow {
-            Some(follow) => {
-                // Synthesized: follow tap must produce the base letter 'a'.
-                assert_eq!(
-                    follow.keycode, a_main.keycode,
-                    "ã follow tap must target the same evdev keycode as 'a' \
-                     (dead_tilde + a sequence)"
-                );
-            }
-            None => {
-                // Direct: must hold AltGr (level 2 or 3 reach).
-                assert!(
-                    mapping.main.altgr,
-                    "if ã is reached directly, it must hold AltGr (level 2/3)"
-                );
-            }
-        }
+        let follow = mapping.follow.expect(
+            "ã on us:intl must be synthesized via dead_tilde + a — \
+             the literal char is not at any level on this layout",
+        );
+        assert_eq!(
+            follow.keycode, a_main.keycode,
+            "ã follow tap must target the same evdev keycode as 'a' \
+             (dead_tilde + a sequence)"
+        );
     }
 
     /// Polish exposes `ą` at level 2 directly. The synthesis pass MUST
