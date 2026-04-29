@@ -133,120 +133,27 @@ bindsym $mod+w exec whisrs toggle
 | **OpenAI REST** | Cloud | Batch | Paid | Simple fallback |
 | **Local whisper.cpp** | Local (CPU/GPU) | Sliding window | Free | Privacy, offline use |
 
-Groq is the default. Fast, free tier, good accuracy with `whisper-large-v3-turbo`.
-
-Deepgram offers $200 in free credits on signup (no credit card required) and supports 60+ languages with the Nova-3 model. The streaming backend provides true real-time transcription over WebSocket.
-
-OpenAI Realtime is the premium option: true streaming over WebSocket means text appears at your cursor while you're still speaking.
-
-### Local whisper.cpp
-
-Run transcription entirely on your machine. No API key, no internet, no data leaves your device. Included in every build.
-
-```bash
-whisrs setup   # select Local > whisper.cpp, pick a model, download automatically
-```
-
-| Model | Size | RAM | Speed (CPU) | Accuracy |
-|---|---|---|---|---|
-| tiny.en | 75 MB | ~273 MB | Real-time | Decent |
-| base.en | 142 MB | ~388 MB | Real-time | Good (recommended) |
-| small.en | 466 MB | ~852 MB | Borderline | Very good |
+Groq is the default. For fully offline use, run `whisrs setup` and select **Local > whisper.cpp** — `base.en` (142 MB, ~388 MB RAM) is recommended; `tiny.en` (75 MB) for low-end hardware, `small.en` (466 MB) for higher accuracy.
 
 ---
 
 ## Configuration
 
-Config file: `~/.config/whisrs/config.toml`
+Config file: `~/.config/whisrs/config.toml` — `whisrs setup` writes a working file. A minimal example:
 
 ```toml
 [general]
-backend = "groq"            # groq | deepgram-streaming | deepgram | openai-realtime | openai | local-whisper
-language = "en"             # ISO 639-1 or "auto"
-silence_timeout_ms = 2000   # auto-stop after silence (streaming only)
-notify = true               # desktop notifications
-remove_filler_words = true  # strip "um", "uh", "you know", etc.
-filler_words = []           # custom list (empty = use built-in defaults)
-audio_feedback = true       # play tones on record start/stop/done
-audio_feedback_volume = 0.5 # 0.0 to 1.0
-vocabulary = ["whisrs", "Hyprland"]  # custom terms for better transcription accuracy
-prompt = "Speech is in English or Spanish. Transcribe in the language spoken; never translate."  # optional sentence-style context, prepended to vocabulary
-tray = true                 # system tray icon (requires SNI host like waybar)
-overlay = false             # bottom-screen recording overlay (Hyprland/Sway, GNOME extension)
-
-# Optional — controls overlay appearance when enabled.
-# Defaults to a 100×40 pill with the "carbon" theme.
-# When the overlay is on, recording/transcribing toast notifications are
-# auto-suppressed (errors still pop) so the same event isn't double-signaled.
-[overlay]
-theme = "carbon"            # "carbon" (default) | "ember" | "cyan" | "custom"
-width = 100                 # 90..=120 (clamped)
-height = 40                 # 36..=48 (clamped)
-
-# When theme = "custom", these override the named theme. Hex strings:
-# #RGB, #RRGGBB, or #RRGGBBAA. Anything missing falls back to carbon.
-# [overlay.colors]
-# background   = "#0E0E10EB"
-# ring         = "#3A3A4050"
-# recording    = "#F0EDF5"
-# transcribing = "#9CA3AF"
-# glow         = "#F0EDF5"
-
-[audio]
-device = "default"
-
-[input]
-# Inter-key delay for the virtual keyboard (uinput). Raise this if a TUI
-# drops characters while whisrs is typing — e.g. Node/Ink-based apps like
-# Claude Code in raw mode. Default: 2.
-key_delay_ms = 2
+backend = "groq"   # groq | deepgram-streaming | deepgram | openai-realtime | openai | local-whisper
+language = "en"    # ISO 639-1 or "auto"
+overlay = false    # bottom-screen recording overlay
 
 [groq]
 api_key = "gsk_..."
-model = "whisper-large-v3-turbo"
-
-[deepgram]
-api_key = "..."
-model = "nova-3"
-
-[openai]
-api_key = "sk-..."
-model = "gpt-4o-mini-transcribe"
-
-[local-whisper]
-model_path = "~/.local/share/whisrs/models/ggml-base.en.bin"
-
-# Command mode: LLM for voice-driven text rewriting
-[llm]
-api_key = "sk-..."
-model = "gpt-4o-mini"
-api_url = "https://api.openai.com/v1/chat/completions"
-
-# Built-in global hotkeys (optional, works without WM keybinds)
-[hotkeys]
-toggle = "Super+Shift+W"
-cancel = "Super+Shift+D"
-command = "Super+Shift+G"
 ```
 
-Environment variable overrides: `WHISRS_GROQ_API_KEY`, `WHISRS_DEEPGRAM_API_KEY`, `WHISRS_OPENAI_API_KEY`
+Env-var overrides: `WHISRS_GROQ_API_KEY`, `WHISRS_DEEPGRAM_API_KEY`, `WHISRS_OPENAI_API_KEY`.
 
-### GNOME overlay
-
-GNOME Wayland does not support the wlroots layer-shell protocol used by Hyprland
-and Sway. To use `overlay = true` on GNOME, install the bundled GNOME Shell
-extension:
-
-```bash
-mkdir -p ~/.local/share/gnome-shell/extensions
-cp -r contrib/gnome-shell-extension/whisrs-overlay@eresende.github \
-  ~/.local/share/gnome-shell/extensions/
-gnome-extensions enable whisrs-overlay@eresende.github
-systemctl --user restart whisrs.service
-```
-
-If GNOME has not discovered the extension yet, log out and back in, then run the
-`gnome-extensions enable` command again.
+For the full reference (overlay, `[input]`, `[llm]`, `[hotkeys]`, GNOME extension setup), see [docs/configuration.md](docs/configuration.md).
 
 ---
 
@@ -272,7 +179,7 @@ whisrs log --clear  # Clear all history
 | **Hyprland** | Tested, full support |
 | **Sway / i3** | Implemented, needs community testing |
 | **X11 (any WM)** | Implemented, needs community testing |
-| **GNOME Wayland** | Limited window tracking; overlay requires bundled GNOME Shell extension |
+| **GNOME Wayland** | Limited window tracking; overlay requires the bundled [GNOME Shell extension](contrib/gnome-shell-extension/README.md) |
 | **KDE Wayland** | Implemented via D-Bus, needs community testing |
 | **Audio** | PipeWire, PulseAudio, ALSA (auto-detected via cpal) |
 | **Distros** | Any Linux with the system dependencies above |
@@ -283,27 +190,9 @@ whisrs log --clear  # Clear all history
 
 ## Project Status
 
-whisrs is functional and usable for daily dictation. The core features work:
+whisrs is functional and usable for daily dictation. Streaming transcription, command mode, multi-language support, system tray, OSD overlay, layout-aware injection (incl. AltGr + dead keys), and packaging for AUR / Nix / crates.io all ship today. Local Vosk and Parakeet backends are next.
 
-- [x] Daemon + CLI architecture
-- [x] Audio capture and WAV encoding
-- [x] Groq, Deepgram (REST + streaming), OpenAI REST, and OpenAI Realtime backends
-- [x] Local whisper.cpp backend (sliding window, prompt conditioning, model download)
-- [x] Layout-aware keyboard injection (uinput + XKB)
-- [x] Wayland/X11 clipboard with save/restore
-- [x] Window tracking (Hyprland, Sway, X11, GNOME, KDE)
-- [x] Desktop notifications and audio feedback
-- [x] Interactive setup with LLM provider selection
-- [x] Filler word removal
-- [x] Transcription history (`whisrs log`)
-- [x] Multi-language support (18 languages + auto-detect)
-- [x] Custom vocabulary for improved transcription accuracy
-- [x] LLM command mode (select text + voice instruction → rewrite)
-- [x] System tray indicator (idle/recording/transcribing)
-- [x] Configurable global hotkeys via evdev
-- [x] Packaging ([AUR](https://aur.archlinux.org/packages/whisrs-git), Nix flake, crates.io)
-- [ ] Local Vosk backend
-- [ ] Local Parakeet backend (NVIDIA)
+Per-release details: [docs/version-roadmap.md](docs/version-roadmap.md).
 
 ---
 

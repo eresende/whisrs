@@ -1,6 +1,7 @@
-# whisrs — Version Roadmap (0.1.2 → 0.1.5)
+# whisrs — Version Roadmap
 
-Incremental feature releases building toward v1.5.
+Incremental feature releases. Earlier entries (v0.1.2 → v0.1.5) are kept here as a
+historical record; current development happens against the v0.1.x patch line.
 
 ---
 
@@ -40,17 +41,34 @@ Incremental feature releases building toward v1.5.
 
 ---
 
-## v0.1.6 — Local Vosk Backend
+## v0.1.6 — Stability fixes ✓
 
-- [ ] **Vosk backend**: CPU-only local speech recognition via `vosk` crate — true streaming, small models (~40 MB), works on Intel (no GPU required)
-- [ ] Final polish pass
+- [x] **Tray icon on boot fix** (#1): Tray icon now appears reliably when the daemon starts at session login.
+- [x] **Text injection on systems with brltty** (#2): Resolved a uinput ACL conflict that prevented text injection when brltty was active.
+- [x] **Hotkeys / command mode on boot fix** (#3): Hotkey listener and command mode now retry/wait for input devices to be available at session start instead of failing silently.
 
 ---
 
-## Deferred
+## v0.1.7 — Deepgram + Unicode safety ✓
 
-- **Parakeet backend** — requires NVIDIA GPU
-- **Cross-compositor testing** — community/contributor effort
-- **Non-QWERTY layout testing** — later
-- **Demo GIF** — later
-- **Anthropic LLM support** — Anthropic uses a different API format (`/v1/messages` instead of `/v1/chat/completions`). Need to add an adapter in `llm.rs` to support the Messages API. Users can access Anthropic models via OpenRouter in the meantime.
+- [x] **Deepgram backend** (#8): New cloud transcription backend with both REST (Nova) and true WebSocket streaming variants. 60+ languages, $200 free credit on signup. Configured via `backend = "deepgram"` / `backend = "deepgram-streaming"`.
+- [x] **Cyrillic / non-ASCII notification panic fix** (#7): Notifications no longer panic when transcribed text contains multi-byte UTF-8 characters; truncation is now codepoint-aware. Tests cover Arabic, CJK, Cyrillic, emoji, and mixed scripts.
+
+---
+
+## v0.1.8 — Overlay, AltGr typing, configurable injection ✓
+
+- [x] **OSD overlay & GNOME Shell extension** (#11): Themed Wispr-Flow-inspired pill overlay (carbon / ember / cyan / custom) with envelope-follower bar visualizer, spring smoothing at 60fps, and a bundled GNOME Shell extension for GNOME Wayland (which lacks layer-shell). Configured via `overlay = true` and the `[overlay]` section. Toast notifications are auto-suppressed when the overlay is on.
+- [x] **AltGr as a real modifier + dead-key synthesis** (#15): The keyboard injector now drives AltGr as a true modifier and synthesizes dead-key combinations, so layouts that depend on AltGr (e.g., proper diacritics in many European layouts) type correctly.
+- [x] **Free-form transcription prompt** (#13): New `prompt = "..."` field in `[general]`, prepended to vocabulary and wired through `build_transcription_config` into Groq, OpenAI REST, OpenAI Realtime, and local whisper.cpp (Deepgram does not accept a prompt). Refactored `build_transcription_config` helper.
+- [x] **Configurable uinput key delay** (#14): New `[input] key_delay_ms = 2` setting — raise it for TUIs (Node/Ink-based apps in raw mode like Claude Code) that drop characters during fast injection.
+- [x] **Keyboard layout detection fix + tests** (#10): Fixed layout detection for non-US layouts; added comprehensive layout tests covering 20 layouts (French, Dvorak, Colemak, Spanish, and more).
+
+---
+
+## Upcoming
+
+- [ ] **Local Vosk backend**: CPU-only local speech recognition via `vosk` crate — true streaming, small models (~40 MB), works on Intel (no GPU required)
+- [ ] **Parakeet backend** — requires NVIDIA GPU
+- [ ] **Cross-compositor testing** — community/contributor effort
+- [ ] **Anthropic LLM support** — Anthropic uses a different API format (`/v1/messages` instead of `/v1/chat/completions`). Need to add an adapter in `llm.rs` to support the Messages API. Users can access Anthropic models via OpenRouter in the meantime.
