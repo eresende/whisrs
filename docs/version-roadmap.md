@@ -60,7 +60,7 @@ historical record; current development happens against the v0.1.x patch line.
 
 - [x] **OSD overlay & GNOME Shell extension** (#11): Themed Wispr-Flow-inspired pill overlay (carbon / ember / cyan / custom) with envelope-follower bar visualizer, spring smoothing at 60fps, and a bundled GNOME Shell extension for GNOME Wayland (which lacks layer-shell). Configured via `overlay = true` and the `[overlay]` section. Toast notifications are auto-suppressed when the overlay is on.
 - [x] **AltGr as a real modifier + dead-key synthesis** (#15): The keyboard injector now drives AltGr as a true modifier and synthesizes dead-key combinations, so layouts that depend on AltGr (e.g., proper diacritics in many European layouts) type correctly.
-- [x] **Free-form transcription prompt** (#13): New `prompt = "..."` field in `[general]`, prepended to vocabulary and wired into the OpenAI Realtime backend. Refactored `build_transcription_config` helper.
+- [x] **Free-form transcription prompt** (#13): New `prompt = "..."` field in `[general]`, prepended to vocabulary and wired through `build_transcription_config` into Groq, OpenAI REST, OpenAI Realtime, and local whisper.cpp (Deepgram does not accept a prompt). Refactored `build_transcription_config` helper.
 - [x] **Configurable uinput key delay** (#14): New `[input] key_delay_ms = 2` setting — raise it for TUIs (Node/Ink-based apps in raw mode like Claude Code) that drop characters during fast injection.
 - [x] **Keyboard layout detection fix + tests** (#10): Fixed layout detection for non-US layouts; added comprehensive layout tests covering 20 layouts (French, Dvorak, Colemak, Spanish, and more).
 
