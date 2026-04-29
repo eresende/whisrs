@@ -289,10 +289,13 @@ whisrs is functional and usable for daily dictation. The core features work:
 - [x] Audio capture and WAV encoding
 - [x] Groq, Deepgram (REST + streaming), OpenAI REST, and OpenAI Realtime backends
 - [x] Local whisper.cpp backend (sliding window, prompt conditioning, model download)
-- [x] Layout-aware keyboard injection (uinput + XKB)
+- [x] Layout-aware keyboard injection (uinput + XKB; AltGr as a real modifier, dead-key synthesis, 20 layouts tested)
+- [x] Configurable inter-key delay for the virtual keyboard (`[input] key_delay_ms`)
 - [x] Wayland/X11 clipboard with save/restore
 - [x] Window tracking (Hyprland, Sway, X11, GNOME, KDE)
 - [x] Desktop notifications and audio feedback
+- [x] OSD overlay (themed bottom-screen pill, envelope-follower bar visualizer; bundled GNOME Shell extension for GNOME Wayland)
+- [x] Free-form transcription prompt (`prompt = "..."` in config, combined with vocabulary)
 - [x] Interactive setup with LLM provider selection
 - [x] Filler word removal
 - [x] Transcription history (`whisrs log`)

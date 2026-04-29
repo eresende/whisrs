@@ -7,7 +7,7 @@ Yes. whisrs has native support for Wayland compositors including Hyprland, Sway,
 Yes. The local whisper.cpp backend runs transcription entirely on your machine. No API key, no internet connection, and no audio data leaves your device. Run `whisrs setup` and select the local backend to get started.
 
 **What speech recognition backends does whisrs support?**
-Four backends: Groq (cloud, free tier), OpenAI REST (cloud), OpenAI Realtime (cloud, true streaming over WebSocket), and local whisper.cpp (offline, CPU/GPU). More local backends (Vosk, Parakeet) are planned.
+Six backends: Groq (cloud, free tier), Deepgram Nova REST and Streaming (cloud, 60+ languages, $200 free credit on signup), OpenAI REST (cloud), OpenAI Realtime (cloud, true streaming over WebSocket), and local whisper.cpp (offline, CPU/GPU). More local backends (Vosk, Parakeet) are planned.
 
 **How does whisrs type text into applications?**
 whisrs creates a virtual keyboard using Linux's uinput subsystem and performs XKB reverse lookups to find the correct keycode and modifier combination for each character. This means it respects your keyboard layout and works in any application, including terminals, editors, and browsers.
