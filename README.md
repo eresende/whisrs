@@ -132,12 +132,15 @@ bindsym $mod+w exec whisrs toggle
 | **OpenAI Realtime** | Cloud (WebSocket) | True streaming | Paid | Best UX, text as you speak |
 | **OpenAI REST** | Cloud | Batch | Paid | Simple fallback |
 | **Local whisper.cpp** | Local (CPU/GPU) | Sliding window | Free | Privacy, offline use |
+| **ASR sidecar** | Local sidecar | Batch | Free | Custom local ASR models |
 
 Groq is the default. Fast, free tier, good accuracy with `whisper-large-v3-turbo`.
 
 Deepgram offers $200 in free credits on signup (no credit card required) and supports 60+ languages with the Nova-3 model. The streaming backend provides true real-time transcription over WebSocket.
 
 OpenAI Realtime is the premium option: true streaming over WebSocket means text appears at your cursor while you're still speaking.
+
+The ASR sidecar backend sends the recorded WAV to a local HTTP service and types the plain text it returns. This keeps Python/PyTorch/vLLM dependencies out of the Rust daemon and lets you use models such as VibeVoice-ASR, Moonshine, Distil-Whisper, or faster-whisper.
 
 ### Local whisper.cpp
 
@@ -153,6 +156,29 @@ whisrs setup   # select Local > whisper.cpp, pick a model, download automaticall
 | base.en | 142 MB | ~388 MB | Real-time | Good (recommended) |
 | small.en | 466 MB | ~852 MB | Borderline | Very good |
 
+### ASR sidecar
+
+The `asr-sidecar` backend expects a local HTTP endpoint that accepts multipart form data:
+
+- `file`: WAV audio
+- `model`: model id, default `microsoft/VibeVoice-ASR-HF`
+- `language`: ISO 639-1 language code when not set to `auto`
+- `hotwords`: optional vocabulary/context prompt
+
+The sidecar should return JSON:
+
+```json
+{ "text": "transcribed text" }
+```
+
+Example sidecars are available under `contrib/asr-sidecars/`; each one has its
+own setup and GPU notes.
+
+| Sidecar | Default model | Best for |
+|---|---|---|
+| `moonshine` | `UsefulSensors/moonshine-base` | Fast lightweight English dictation |
+| `vibevoice` | `microsoft/VibeVoice-ASR-HF` | Long-form local transcription experiments |
+
 ---
 
 ## Configuration
@@ -161,7 +187,7 @@ Config file: `~/.config/whisrs/config.toml`
 
 ```toml
 [general]
-backend = "groq"            # groq | deepgram-streaming | deepgram | openai-realtime | openai | local-whisper
+backend = "groq"            # groq | deepgram-streaming | deepgram | openai-realtime | openai | local-whisper | asr-sidecar
 language = "en"             # ISO 639-1 or "auto"
 silence_timeout_ms = 2000   # auto-stop after silence (streaming only)
 notify = true               # desktop notifications
@@ -215,6 +241,10 @@ model = "gpt-4o-mini-transcribe"
 
 [local-whisper]
 model_path = "~/.local/share/whisrs/models/ggml-base.en.bin"
+
+[asr-sidecar]
+url = "http://127.0.0.1:8765/transcribe"
+model = "microsoft/VibeVoice-ASR-HF"
 
 # Command mode: LLM for voice-driven text rewriting
 [llm]
@@ -287,7 +317,7 @@ whisrs is functional and usable for daily dictation. The core features work:
 
 - [x] Daemon + CLI architecture
 - [x] Audio capture and WAV encoding
-- [x] Groq, Deepgram (REST + streaming), OpenAI REST, and OpenAI Realtime backends
+- [x] Groq, Deepgram (REST + streaming), OpenAI REST, OpenAI Realtime, and ASR sidecar backends
 - [x] Local whisper.cpp backend (sliding window, prompt conditioning, model download)
 - [x] Layout-aware keyboard injection (uinput + XKB)
 - [x] Wayland/X11 clipboard with save/restore

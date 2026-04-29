@@ -16,6 +16,7 @@ use whisrs::input::ClipboardHandler;
 use whisrs::llm;
 use whisrs::post_processing::filler::remove_filler_words;
 use whisrs::state::{Action, StateMachine};
+use whisrs::transcription::asr_sidecar::AsrSidecarBackend;
 use whisrs::transcription::deepgram::{DeepgramRestBackend, DeepgramStreamingBackend};
 use whisrs::transcription::groq::GroqBackend;
 use whisrs::transcription::local_parakeet::ParakeetBackend;
@@ -142,6 +143,7 @@ fn load_config() -> (Config, Option<String>) {
                             local_whisper: None,
                             local_vosk: None,
                             local_parakeet: None,
+                            asr_sidecar: None,
                             llm: None,
                             hotkeys: None,
                             overlay: None,
@@ -167,6 +169,7 @@ fn load_config() -> (Config, Option<String>) {
                         local_whisper: None,
                         local_vosk: None,
                         local_parakeet: None,
+                        asr_sidecar: None,
                         llm: None,
                         hotkeys: None,
                         overlay: None,
@@ -192,6 +195,7 @@ fn load_config() -> (Config, Option<String>) {
             local_whisper: None,
             local_vosk: None,
             local_parakeet: None,
+            asr_sidecar: None,
             llm: None,
             hotkeys: None,
             overlay: None,
@@ -464,6 +468,15 @@ fn create_backend(config: &Config) -> Arc<dyn TranscriptionBackend> {
             info!("using Parakeet transcription backend (model: {model_path})");
             Arc::new(ParakeetBackend::new(model_path))
         }
+        "asr-sidecar" | "asr" | "vibevoice" => {
+            let url = config
+                .asr_sidecar
+                .as_ref()
+                .map(|v| v.url.clone())
+                .unwrap_or_else(|| "http://127.0.0.1:8765/transcribe".to_string());
+            info!("using ASR sidecar transcription backend ({url})");
+            Arc::new(AsrSidecarBackend::new(url))
+        }
         other => {
             warn!("unknown backend '{other}', falling back to groq");
             let api_key = resolve_groq_api_key(config).unwrap_or_default();
@@ -492,6 +505,11 @@ fn get_model_for_backend(config: &Config) -> String {
         "local-whisper" | "local" => "base.en".to_string(),
         "local-vosk" => "small-en-us".to_string(),
         "local-parakeet" => "eou-120m".to_string(),
+        "asr-sidecar" | "asr" | "vibevoice" => config
+            .asr_sidecar
+            .as_ref()
+            .map(|v| v.model.clone())
+            .unwrap_or_else(|| "microsoft/VibeVoice-ASR-HF".to_string()),
         _ => "whisper-large-v3-turbo".to_string(),
     }
 }

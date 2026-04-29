@@ -13,7 +13,7 @@ use dialoguer::{Confirm, Input, Password, Select};
 
 use crate::llm::LlmConfig;
 use crate::{
-    AudioConfig, Config, DeepgramConfig, GeneralConfig, GroqConfig, InputConfig,
+    AsrSidecarConfig, AudioConfig, Config, DeepgramConfig, GeneralConfig, GroqConfig, InputConfig,
     LocalWhisperConfig, OpenAiConfig,
 };
 
@@ -33,6 +33,7 @@ const BACKEND_CHOICES: &[&str] = &[
     "OpenAI Realtime    (best streaming, cloud)",
     "OpenAI REST        (simple, cloud)",
     "Local              (offline, no API key needed)",
+    "ASR sidecar        (local HTTP sidecar, model-agnostic)",
 ];
 
 /// Map selection index to backend string used in config.
@@ -43,6 +44,7 @@ const BACKEND_VALUES: &[&str] = &[
     "openai-realtime",
     "openai",
     "local",
+    "asr-sidecar",
 ];
 
 /// Whisper model choices (name, file size, description).
@@ -102,7 +104,7 @@ pub fn run_setup() -> Result<()> {
     let backend = select_backend(None)?;
 
     // 2. Configure backend (API key or model download).
-    let (deepgram_config, groq_config, openai_config, local_whisper_config) =
+    let (deepgram_config, groq_config, openai_config, local_whisper_config, asr_sidecar_config) =
         configure_backend(&backend, None)?;
 
     // 3. Language.
@@ -146,6 +148,7 @@ pub fn run_setup() -> Result<()> {
         local_whisper: local_whisper_config,
         local_vosk: None,
         local_parakeet: None,
+        asr_sidecar: asr_sidecar_config,
         llm: llm_config,
         hotkeys: None,
         overlay: if overlay { overlay_config } else { None },
@@ -185,6 +188,7 @@ fn select_backend(existing: Option<&Config>) -> Result<String> {
                 "openai-realtime" => 3,
                 "openai" => 4,
                 _ if b.starts_with("local") => 5,
+                "asr-sidecar" | "asr" | "vibevoice" => 6,
                 _ => 0,
             }
         })
@@ -249,6 +253,7 @@ fn configure_backend(
     Option<GroqConfig>,
     Option<OpenAiConfig>,
     Option<LocalWhisperConfig>,
+    Option<AsrSidecarConfig>,
 )> {
     match backend {
         "deepgram" | "deepgram-streaming" => {
@@ -264,7 +269,13 @@ fn configure_backend(
                 .and_then(|c| c.deepgram.as_ref())
                 .map(|d| d.model.clone())
                 .unwrap_or_else(|| "nova-3".to_string());
-            Ok((Some(DeepgramConfig { api_key, model }), None, None, None))
+            Ok((
+                Some(DeepgramConfig { api_key, model }),
+                None,
+                None,
+                None,
+                None,
+            ))
         }
         "groq" => {
             let existing_key = existing.and_then(|c| c.groq.as_ref()).map(|g| &g.api_key);
@@ -277,7 +288,7 @@ fn configure_backend(
                 .and_then(|c| c.groq.as_ref())
                 .map(|g| g.model.clone())
                 .unwrap_or_else(|| "whisper-large-v3-turbo".to_string());
-            Ok((None, Some(GroqConfig { api_key, model }), None, None))
+            Ok((None, Some(GroqConfig { api_key, model }), None, None, None))
         }
         "openai-realtime" | "openai" => {
             let existing_key = existing.and_then(|c| c.openai.as_ref()).map(|o| &o.api_key);
@@ -306,7 +317,13 @@ fn configure_backend(
                 }
                 .to_string()
             };
-            Ok((None, None, Some(OpenAiConfig { api_key, model }), None))
+            Ok((
+                None,
+                None,
+                Some(OpenAiConfig { api_key, model }),
+                None,
+                None,
+            ))
         }
         "local-whisper" => {
             // Select model size.
@@ -346,9 +363,45 @@ fn configure_backend(
             }
 
             let model_path = dest.to_string_lossy().to_string();
-            Ok((None, None, None, Some(LocalWhisperConfig { model_path })))
+            Ok((
+                None,
+                None,
+                None,
+                Some(LocalWhisperConfig { model_path }),
+                None,
+            ))
         }
-        _ => Ok((None, None, None, None)),
+        "asr-sidecar" | "asr" | "vibevoice" => {
+            let existing_sidecar = existing.and_then(|c| c.asr_sidecar.as_ref());
+            let url: String = Input::new()
+                .with_prompt("ASR sidecar URL")
+                .default(
+                    existing_sidecar
+                        .map(|v| v.url.clone())
+                        .unwrap_or_else(|| "http://127.0.0.1:8765/transcribe".to_string()),
+                )
+                .interact_text()
+                .context("failed to read ASR sidecar URL")?;
+
+            let model: String = Input::new()
+                .with_prompt("ASR sidecar model")
+                .default(
+                    existing_sidecar
+                        .map(|v| v.model.clone())
+                        .unwrap_or_else(|| "microsoft/VibeVoice-ASR-HF".to_string()),
+                )
+                .interact_text()
+                .context("failed to read ASR sidecar model")?;
+
+            Ok((
+                None,
+                None,
+                None,
+                None,
+                Some(AsrSidecarConfig { url, model }),
+            ))
+        }
+        _ => Ok((None, None, None, None, None)),
     }
 }
 
