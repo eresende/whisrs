@@ -196,9 +196,11 @@ whisrs log --clear  # Clear all history
 
 ---
 
+<a id="supported-environments"></a>
+
 ## Does whisrs work on Wayland, GNOME, KDE, Hyprland, and Sway?
 
-Yes. whisrs runs natively on both Wayland and X11 across 5 desktop environments — Hyprland, Sway/i3, GNOME Wayland, KDE Wayland, and any X11 window manager — with daily-driver coverage on Hyprland and community-confirmed reports on GNOME Wayland and Xorg. Audio capture works on PipeWire, PulseAudio, and ALSA via cpal.
+Yes. whisrs runs natively on both Wayland and X11 across Hyprland, Sway, i3, GNOME Wayland, KDE Wayland, and any X11 window manager — with daily-driver coverage on Hyprland and community-confirmed reports on GNOME Wayland and Xorg. Audio capture works on PipeWire, PulseAudio, and ALSA via cpal.
 
 | Component | Support |
 |---|---|
