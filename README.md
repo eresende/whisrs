@@ -13,9 +13,9 @@
 [![Crates.io](https://img.shields.io/crates/v/whisrs)](https://crates.io/crates/whisrs)
 [![docs.rs](https://img.shields.io/docsrs/whisrs)](https://docs.rs/whisrs)
 
-**Linux-first voice-to-text dictation tool, written in Rust.**
+**The open source Wispr Flow alternative for Linux.** Voice-to-text dictation for Wayland, X11, Hyprland, Sway, GNOME, and KDE — written in Rust.
 
-Speech-to-text for Wayland, X11, Hyprland, Sway, GNOME, and KDE. Press a hotkey, speak, and your words appear at the cursor. Works with any app, any window manager, any desktop environment. Supports cloud transcription (Groq, Deepgram, OpenAI) and fully offline local transcription via whisper.cpp. Fast, private, open source.
+Press a hotkey, speak, and your words appear at the cursor in any focused app. Supports cloud transcription (Groq, Deepgram, OpenAI) and fully offline local transcription via whisper.cpp. Fast, private, open source.
 
 ---
 
@@ -238,7 +238,24 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and project structu
 
 ---
 
-## [How whisrs Compares](docs/comparison.md)
+## How whisrs Compares to Wispr Flow and Other Dictation Tools
+
+whisrs is the open source alternative to closed-source dictation apps like **Wispr Flow** and **Superwhisper**, neither of which ships a Linux client. The closest open-source equivalents include [nerd-dictation](https://github.com/ideasman42/nerd-dictation), [Speech Note](https://github.com/mkiol/dsnote), and the cross-platform [Handy](https://github.com/cjpais/Handy). Head-to-head against the Linux-native options:
+
+| Feature | whisrs | [nerd-dictation](https://github.com/ideasman42/nerd-dictation) | [Speech Note](https://github.com/mkiol/dsnote) | [Wispr Flow](https://wisprflow.ai/) |
+|---|---|---|---|---|
+| **Platform** | Linux | Linux | Linux | macOS, Windows (no Linux) |
+| **Wayland support** | Yes (native) | Partial (xdotool) | Yes (GUI app) | N/A |
+| **Offline transcription** | Yes (whisper.cpp) | Yes (Vosk) | Yes (multiple) | No |
+| **Cloud transcription** | Groq, Deepgram (REST + streaming), OpenAI, OpenAI Realtime | No | No | Proprietary |
+| **True streaming** | Yes (OpenAI Realtime) | No | No | Yes |
+| **Keyboard injection** | uinput + XKB (layout-aware) | xdotool | Clipboard paste | Native |
+| **Window tracking** | Hyprland, Sway, X11, GNOME, KDE | No | No | Native |
+| **Architecture** | Daemon + CLI (bind to any hotkey) | Script | GUI app | GUI app |
+| **Language** | Rust | Python | C++/Qt | Closed source |
+| **Setup** | Interactive (`whisrs setup`) | Manual config | GUI | Installer |
+
+For the full comparison, see [docs/comparison.md](docs/comparison.md).
 
 ## [FAQ](docs/faq.md)
 
