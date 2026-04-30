@@ -1,2 +1,7 @@
 /target
-/docs
+/docs/*
+!/docs/comparison.md
+!/docs/configuration.md
+!/docs/faq.md
+!/docs/troubleshooting.md
+!/docs/version-roadmap.md

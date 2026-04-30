@@ -13,15 +13,15 @@
 [![Crates.io](https://img.shields.io/crates/v/whisrs)](https://crates.io/crates/whisrs)
 [![docs.rs](https://img.shields.io/docsrs/whisrs)](https://docs.rs/whisrs)
 
-**Linux-first voice-to-text dictation tool, written in Rust.**
+**whisrs is a Linux voice-to-text dictation tool written in Rust that transcribes speech via 6 backends — Groq, Deepgram REST, Deepgram Streaming, OpenAI REST, OpenAI Realtime, and local whisper.cpp — and types it into the focused window. It is the open-source Wispr Flow alternative for Linux.**
 
-Speech-to-text for Wayland, X11, Hyprland, Sway, GNOME, and KDE. Press a hotkey, speak, and your words appear at the cursor. Works with any app, any window manager, any desktop environment. Supports cloud transcription (Groq, Deepgram, OpenAI) and fully offline local transcription via whisper.cpp. Fast, private, open source.
+Press a hotkey, speak, and your words appear at the cursor in any focused app on Wayland, X11, Hyprland, Sway, GNOME, or KDE. Audio is captured via cpal across PipeWire, PulseAudio, and ALSA. Fully offline local transcription runs in under 500 MB of RAM with `base.en`. Fast, private, open source.
 
 ---
 
-## Why whisrs?
+## How does whisrs differ from Wispr Flow and Superwhisper?
 
-Dictation tools like Wispr Flow and Superwhisper are not available on Linux. [xhisper](https://github.com/imaginalnika/xhisper) proved the concept works, but I kept running into limitations. whisrs takes that idea and rebuilds it in Rust as a single async process with native keyboard layout support, window tracking, and multiple transcription backends.
+Wispr Flow and Superwhisper are closed-source dictation apps that don't run on Linux. whisrs is open source (MIT), Linux-native, and ships as a single async Rust process with native keyboard layout support (uinput + XKB), window tracking across Hyprland, Sway, X11, GNOME, and KDE, and 6 swappable transcription backends — both cloud (Groq, Deepgram, OpenAI) and fully offline (whisper.cpp). [xhisper](https://github.com/imaginalnika/xhisper) proved the concept on Linux; whisrs rebuilds it from scratch in Rust with broader compositor support and a daemon/CLI architecture you can bind to any hotkey.
 
 ---
 
@@ -44,7 +44,31 @@ The install script handles everything: detects your distro, installs system depe
 After install, **press your hotkey** to start recording, **press again** to stop. Text appears at your cursor.
 
 <details>
-<summary><b>Other install methods (AUR, Cargo, Nix, manual)</b></summary>
+<summary><b>Other install methods (pre-built binary, AUR, Cargo, Nix, manual)</b></summary>
+
+### Pre-built binary (Linux x86_64)
+
+Each tagged release publishes a tarball on [GitHub Releases](https://github.com/y0sif/whisrs/releases/latest) with both `whisrs` and `whisrsd` plus the contrib files (udev rule, systemd unit, man pages).
+
+```bash
+# Full build (cloud + local whisper.cpp)
+curl -sSL -o whisrs.tar.gz https://github.com/y0sif/whisrs/releases/latest/download/whisrs-linux-x86_64.tar.gz
+
+# Or the minimal build (cloud backends only — smaller, no whisper.cpp)
+curl -sSL -o whisrs.tar.gz https://github.com/y0sif/whisrs/releases/latest/download/whisrs-linux-x86_64-minimal.tar.gz
+
+tar xzf whisrs.tar.gz
+sudo install -m755 whisrs whisrsd /usr/local/bin/
+sudo install -m644 contrib/99-whisrs.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo usermod -aG input $USER   # log out / back in for the group change
+whisrs setup
+```
+
+| Variant | Includes local whisper.cpp | Tarball |
+|---|---|---|
+| `whisrs-linux-x86_64.tar.gz` | yes | full build |
+| `whisrs-linux-x86_64-minimal.tar.gz` | no (cloud backends only) | minimal build |
 
 ### Arch Linux (AUR)
 
@@ -122,7 +146,7 @@ bindsym $mod+w exec whisrs toggle
 
 ---
 
-## Transcription Backends
+## What transcription backends does whisrs support?
 
 | Backend | Type | Streaming | Cost | Best for |
 |---|---|---|---|---|
@@ -183,7 +207,7 @@ own setup and GPU notes.
 
 ## Configuration
 
-Config file: `~/.config/whisrs/config.toml`
+Config file: `~/.config/whisrs/config.toml` — `whisrs setup` writes a working file. A minimal example:
 
 ```toml
 [general]
@@ -259,24 +283,9 @@ cancel = "Super+Shift+D"
 command = "Super+Shift+G"
 ```
 
-Environment variable overrides: `WHISRS_GROQ_API_KEY`, `WHISRS_DEEPGRAM_API_KEY`, `WHISRS_OPENAI_API_KEY`
+Env-var overrides: `WHISRS_GROQ_API_KEY`, `WHISRS_DEEPGRAM_API_KEY`, `WHISRS_OPENAI_API_KEY`.
 
-### GNOME overlay
-
-GNOME Wayland does not support the wlroots layer-shell protocol used by Hyprland
-and Sway. To use `overlay = true` on GNOME, install the bundled GNOME Shell
-extension:
-
-```bash
-mkdir -p ~/.local/share/gnome-shell/extensions
-cp -r contrib/gnome-shell-extension/whisrs-overlay@eresende.github \
-  ~/.local/share/gnome-shell/extensions/
-gnome-extensions enable whisrs-overlay@eresende.github
-systemctl --user restart whisrs.service
-```
-
-If GNOME has not discovered the extension yet, log out and back in, then run the
-`gnome-extensions enable` command again.
+For the full reference (overlay, `[input]`, `[llm]`, `[hotkeys]`, GNOME extension setup), see [docs/configuration.md](docs/configuration.md).
 
 ---
 
@@ -295,19 +304,23 @@ whisrs log --clear  # Clear all history
 
 ---
 
-## Supported Environments
+<a id="supported-environments"></a>
+
+## Does whisrs work on Wayland, GNOME, KDE, Hyprland, and Sway?
+
+Yes. whisrs runs natively on both Wayland and X11 across Hyprland, Sway, i3, GNOME Wayland, KDE Wayland, and any X11 window manager — with daily-driver coverage on Hyprland and community-confirmed reports on GNOME Wayland and Xorg. Audio capture works on PipeWire, PulseAudio, and ALSA via cpal.
 
 | Component | Support |
 |---|---|
-| **Hyprland** | Tested, full support |
-| **Sway / i3** | Implemented, needs community testing |
-| **X11 (any WM)** | Implemented, needs community testing |
-| **GNOME Wayland** | Limited window tracking; overlay requires bundled GNOME Shell extension |
-| **KDE Wayland** | Implemented via D-Bus, needs community testing |
+| **Hyprland** | Tested by maintainer and community (Arch Linux) |
+| **Sway / i3** | Implemented; additional reports welcome |
+| **X11 (any WM)** | Tested by community on Ubuntu 24.04 (Xorg) |
+| **GNOME Wayland** | Tested by community on Ubuntu 24.04 and Arch (mutter); overlay via the bundled [GNOME Shell extension](contrib/gnome-shell-extension/README.md) |
+| **KDE Wayland** | Implemented via D-Bus; reports welcome |
 | **Audio** | PipeWire, PulseAudio, ALSA (auto-detected via cpal) |
-| **Distros** | Any Linux with the system dependencies above |
+| **Distros** | Confirmed on Arch Linux and Ubuntu 24.04; any Linux with the system dependencies above |
 
-> **Note:** whisrs has been primarily tested on **Hyprland (Arch Linux)**. Testing on other compositors and distros is a valuable contribution. If you run into issues, please open an issue.
+> **Note:** whisrs is daily-driven on Hyprland (Arch Linux), with community confirmation on GNOME Wayland (Ubuntu 24.04 + Arch) and Xorg (Ubuntu 24.04). Sway, i3, and KDE reports are still wanted — if you use whisrs there, please open an issue with what works and what doesn't.
 
 ---
 
@@ -355,7 +368,24 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and project structu
 
 ---
 
-## [How whisrs Compares](docs/comparison.md)
+## How whisrs Compares to Wispr Flow and Other Dictation Tools
+
+whisrs is the open source alternative to closed-source dictation apps like **Wispr Flow** and **Superwhisper**, neither of which ships a Linux client. The closest open-source equivalents include [nerd-dictation](https://github.com/ideasman42/nerd-dictation), [Speech Note](https://github.com/mkiol/dsnote), and the cross-platform [Handy](https://github.com/cjpais/Handy). Head-to-head against the Linux-native options:
+
+| Feature | whisrs | [nerd-dictation](https://github.com/ideasman42/nerd-dictation) | [Speech Note](https://github.com/mkiol/dsnote) | [Wispr Flow](https://wisprflow.ai/) |
+|---|---|---|---|---|
+| **Platform** | Linux | Linux | Linux | macOS, Windows (no Linux) |
+| **Wayland support** | Yes (native) | Partial (xdotool) | Yes (GUI app) | N/A |
+| **Offline transcription** | Yes (whisper.cpp) | Yes (Vosk) | Yes (multiple) | No |
+| **Cloud transcription** | Groq, Deepgram (REST + streaming), OpenAI, OpenAI Realtime | No | No | Proprietary |
+| **True streaming** | Yes (OpenAI Realtime) | No | No | Yes |
+| **Keyboard injection** | uinput + XKB (layout-aware) | xdotool | Clipboard paste | Native |
+| **Window tracking** | Hyprland, Sway, X11, GNOME, KDE | No | No | Native |
+| **Architecture** | Daemon + CLI (bind to any hotkey) | Script | GUI app | GUI app |
+| **Language** | Rust | Python | C++/Qt | Closed source |
+| **Setup** | Interactive (`whisrs setup`) | Manual config | GUI | Installer |
+
+For the full comparison, see [docs/comparison.md](docs/comparison.md).
 
 ## [FAQ](docs/faq.md)
 
