@@ -15,7 +15,7 @@ use tracing::{debug, error, info, warn};
 use super::AudioChunk;
 
 /// Desired sample rate for speech recognition.
-const SAMPLE_RATE: u32 = 16_000;
+pub const SAMPLE_RATE: u32 = 16_000;
 
 /// Number of channels (mono).
 const CHANNELS: u16 = 1;

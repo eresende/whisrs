@@ -7,14 +7,15 @@ use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
-use whisrs::audio::capture::AudioCaptureHandle;
+use whisrs::audio::capture::{AudioCaptureHandle, SAMPLE_RATE};
 use whisrs::audio::feedback;
-use whisrs::audio::silence::AutoStopDetector;
+use whisrs::audio::silence::{audio_gate_reason, AutoStopDetector, SILENCE_RMS_THRESHOLD};
 use whisrs::history::{self, HistoryEntry};
 use whisrs::input::clipboard::ClipboardOps;
 use whisrs::input::ClipboardHandler;
 use whisrs::llm;
 use whisrs::post_processing::filler::remove_filler_words;
+use whisrs::post_processing::prompt_echo::is_prompt_echo;
 use whisrs::state::{Action, StateMachine};
 use whisrs::transcription::deepgram::{DeepgramRestBackend, DeepgramStreamingBackend};
 use whisrs::transcription::groq::GroqBackend;
@@ -205,6 +206,10 @@ const COMPOSITOR_ENV_MAX_RETRIES: u32 = 10;
 
 /// Initial retry delay for compositor env detection (doubles each attempt, capped at 10 s).
 const COMPOSITOR_ENV_INITIAL_DELAY: Duration = Duration::from_secs(1);
+
+/// Minimum recording duration accepted by the gate. Anything shorter is almost
+/// certainly an accidental hotkey tap.
+const AUDIO_GATE_MIN_MS: u64 = 300;
 
 /// Compositor environment variables to import from systemd.
 const COMPOSITOR_ENV_VARS: &[&str] = &[
@@ -1060,7 +1065,8 @@ async fn run_streaming_pipeline(
     });
 
     // Forward audio from capture to backend, with auto-stop detection.
-    let mut auto_stop = AutoStopDetector::new(0.003, silence_timeout_ms, 16_000);
+    let mut auto_stop =
+        AutoStopDetector::new(SILENCE_RMS_THRESHOLD, silence_timeout_ms, SAMPLE_RATE);
 
     while let Some(chunk) = audio_rx.recv().await {
         // Check for auto-stop.
@@ -1181,6 +1187,30 @@ async fn process_recording_batch(
 
     info!("collected {} audio samples", samples.len());
 
+    // Skip the API call entirely when the recording is empty, too short, or
+    // pure silence. Cloud Whisper variants (whisper-1, gpt-4o-*-transcribe)
+    // hallucinate verbatim chunks of the supplied prompt when handed audio
+    // with no speech, which whisrs would then type at the cursor — for a
+    // multi-hundred-character prompt that means tens of seconds of garbage
+    // typing on every accidental hotkey tap. Filtering here also saves the
+    // round-trip cost.
+    if let Some(reason) = audio_gate_reason(
+        &samples,
+        SAMPLE_RATE,
+        AUDIO_GATE_MIN_MS,
+        SILENCE_RMS_THRESHOLD,
+    ) {
+        let label = reason.as_str();
+        info!(
+            "skipping transcription: recording was {label} ({} samples)",
+            samples.len()
+        );
+        if context.notify_state() {
+            send_notification("whisrs", &format!("Skipped: recording was {label}"));
+        }
+        return Ok(String::new());
+    }
+
     let wav_data = encode_wav(&samples)?;
     info!("encoded WAV: {} bytes", wav_data.len());
 
@@ -1220,6 +1250,28 @@ async fn process_recording_batch(
             return Err(e);
         }
     };
+
+    // Defence in depth against prompt-echo hallucinations: even with the
+    // upstream gate, low-SNR recordings (tap microphones, very brief speech
+    // followed by silence) sometimes squeak through and trigger the model to
+    // regurgitate the prompt. Drop those before they reach the keyboard.
+    if config
+        .prompt
+        .as_deref()
+        .is_some_and(|prompt| is_prompt_echo(&text, prompt))
+    {
+        warn!(
+            "discarding likely prompt-echo response ({} chars) — see post_processing::prompt_echo",
+            text.len()
+        );
+        if context.notify_state() {
+            send_notification(
+                "whisrs",
+                "Skipped: response looked like a prompt echo (no speech detected)",
+            );
+        }
+        return Ok(String::new());
+    }
 
     // Apply filler word removal if enabled.
     let text = if context.config.general.remove_filler_words {
@@ -1560,7 +1612,7 @@ async fn command_mode_background(
     context: Arc<DaemonContext>,
 ) {
     let silence_timeout = context.config.general.silence_timeout_ms;
-    let mut auto_stop = AutoStopDetector::new(0.003, silence_timeout, 16_000);
+    let mut auto_stop = AutoStopDetector::new(SILENCE_RMS_THRESHOLD, silence_timeout, SAMPLE_RATE);
     let mut all_samples: Vec<i16> = Vec::new();
 
     // Collect audio until silence auto-stop or channel close (manual stop).
@@ -1605,9 +1657,19 @@ async fn command_mode_background(
         feedback::play_stop(context.config.general.audio_feedback_volume);
     }
 
-    if all_samples.is_empty() {
+    if let Some(reason) = audio_gate_reason(
+        &all_samples,
+        SAMPLE_RATE,
+        AUDIO_GATE_MIN_MS,
+        SILENCE_RMS_THRESHOLD,
+    ) {
+        let label = reason.as_str();
+        info!(
+            "command mode: skipping (recording was {label}, {} samples)",
+            all_samples.len()
+        );
         if context.notify_error() {
-            send_notification("whisrs", "Command mode: no audio captured");
+            send_notification("whisrs", &format!("Command mode: recording was {label}"));
         }
         let mut ds = daemon_state.lock().await;
         let _ = ds.state_machine.transition(Action::TranscriptionDone);
