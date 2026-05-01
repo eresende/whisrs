@@ -4,6 +4,7 @@
 
 pub mod dbus;
 pub mod hyprland;
+pub mod niri;
 pub mod sway;
 pub mod x11;
 
@@ -43,13 +44,19 @@ impl WindowTracker for NoopTracker {
 ///
 /// Detection order:
 /// 1. `$HYPRLAND_INSTANCE_SIGNATURE` → Hyprland
-/// 2. `$SWAYSOCK` → Sway
-/// 3. `$XDG_SESSION_TYPE == x11` → X11
-/// 4. Fallback → NoopTracker
+/// 2. `$NIRI_SOCKET` → Niri
+/// 3. `$SWAYSOCK` → Sway
+/// 4. `$XDG_SESSION_TYPE == x11` → X11
+/// 5. Fallback → NoopTracker
 pub fn detect_tracker() -> Box<dyn WindowTracker> {
     if std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok() {
         info!("detected Hyprland compositor for window tracking");
         return Box::new(hyprland::HyprlandTracker::new());
+    }
+
+    if std::env::var("NIRI_SOCKET").is_ok() {
+        info!("detected Niri compositor for window tracking");
+        return Box::new(niri::NiriTracker::new());
     }
 
     if std::env::var("SWAYSOCK").is_ok() {
