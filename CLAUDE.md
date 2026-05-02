@@ -35,6 +35,10 @@ whisrs cancel    # cancel and discard audio
 whisrs status    # query daemon state
 whisrs restart   # restart the daemon (wraps systemctl --user when present)
 
+# Dev loop: rebuild this checkout and restart the daemon
+./scripts/dev-install.sh             # build + install to ~/.cargo/bin + restart
+./scripts/dev-install.sh --system    # build + sudo install to /usr/local/bin + restart
+
 # Debug logging
 set -x RUST_LOG debug; whisrsd
 ```
