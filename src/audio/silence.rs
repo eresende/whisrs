@@ -3,6 +3,13 @@
 //! Used to detect when the user has stopped speaking, for auto-stop
 //! and VAD-based chunk splitting.
 
+/// Normalized RMS threshold below which audio is considered silence.
+///
+/// Shared between [`AutoStopDetector`] and [`audio_gate_reason`] so the gate
+/// agrees with auto-stop on what counts as silence — empirically, recordings
+/// whose entire duration sits under this floor carry no usable speech.
+pub const SILENCE_RMS_THRESHOLD: f64 = 0.003;
+
 /// Calculate the RMS (root mean square) energy of a slice of i16 samples.
 ///
 /// Returns a value between 0.0 and 1.0 (normalized to the i16 range).
@@ -24,6 +31,62 @@ pub fn rms_energy(samples: &[i16]) -> f64 {
 /// produces RMS around 0.02–0.15; silence is usually below 0.005.
 pub fn is_silent(samples: &[i16], threshold: f64) -> bool {
     rms_energy(samples) < threshold
+}
+
+/// Reason a recorded buffer should be skipped instead of sent to a transcription
+/// backend.
+///
+/// Returned by [`audio_gate_reason`]; carries a short human-readable label
+/// that the daemon logs and surfaces in notifications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateReason {
+    Empty,
+    /// Recording shorter than the minimum allowed duration.
+    TooShort,
+    Silent,
+}
+
+impl GateReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GateReason::Empty => "empty",
+            GateReason::TooShort => "too short",
+            GateReason::Silent => "silent",
+        }
+    }
+}
+
+/// Decide whether an audio buffer is too empty/silent to bother sending to a
+/// cloud transcription backend.
+///
+/// Returns `Some(reason)` when the buffer should be discarded outright, `None`
+/// otherwise. Thresholds are intentionally permissive — the goal is to filter
+/// out the obviously unusable cases (accidental hotkey taps, recordings that
+/// captured only background hum) that would otherwise reach the API. Cloud
+/// Whisper variants (whisper-1, gpt-4o-*-transcribe) hallucinate verbatim
+/// chunks of the supplied `prompt` when the audio carries no speech, so this
+/// gate is the first line of defence against prompt-echo output.
+pub fn audio_gate_reason(
+    samples: &[i16],
+    sample_rate: u32,
+    min_duration_ms: u64,
+    threshold: f64,
+) -> Option<GateReason> {
+    debug_assert!(
+        sample_rate > 0,
+        "audio_gate_reason requires sample_rate > 0"
+    );
+    if samples.is_empty() {
+        return Some(GateReason::Empty);
+    }
+    let duration_ms = (samples.len() as u64).saturating_mul(1000) / sample_rate as u64;
+    if duration_ms < min_duration_ms {
+        return Some(GateReason::TooShort);
+    }
+    if is_silent(samples, threshold) {
+        return Some(GateReason::Silent);
+    }
+    None
 }
 
 /// Tracks consecutive silent frames and signals when silence has exceeded
@@ -193,6 +256,45 @@ mod tests {
 
         detector.reset();
         assert!(!detector.has_speech());
+    }
+
+    // --- audio_gate_reason tests ---
+
+    #[test]
+    fn gate_rejects_empty() {
+        assert_eq!(
+            audio_gate_reason(&[], 16_000, 300, 0.005),
+            Some(GateReason::Empty)
+        );
+    }
+
+    #[test]
+    fn gate_rejects_too_short() {
+        // 100ms at 16kHz = 1600 samples; threshold 300ms.
+        let samples: Vec<i16> = vec![10_000; 1_600];
+        assert_eq!(
+            audio_gate_reason(&samples, 16_000, 300, 0.005),
+            Some(GateReason::TooShort)
+        );
+    }
+
+    #[test]
+    fn gate_rejects_silent_long_recording() {
+        // 1s of pure silence — long enough but below threshold.
+        let samples = vec![0i16; 16_000];
+        assert_eq!(
+            audio_gate_reason(&samples, 16_000, 300, 0.005),
+            Some(GateReason::Silent)
+        );
+    }
+
+    #[test]
+    fn gate_accepts_speech() {
+        // ~50% amplitude tone, 1s — clearly above threshold.
+        let samples: Vec<i16> = (0..16_000)
+            .map(|i| ((i as f64 * 0.1).sin() * 16_000.0) as i16)
+            .collect();
+        assert_eq!(audio_gate_reason(&samples, 16_000, 300, 0.005), None);
     }
 
     #[test]

@@ -60,6 +60,7 @@ src/
 │   ├── groq.rs             # Groq Whisper API (chunked HTTP, timestamp dedup)
 │   ├── openai_realtime.rs  # OpenAI Realtime API (WebSocket, true streaming)
 │   ├── openai_rest.rs      # OpenAI REST API (simple HTTP POST)
+│   ├── asr_sidecar.rs      # Generic HTTP ASR sidecar backend
 │   ├── local_whisper.rs    # Local whisper.cpp via whisper-rs (feature-gated)
 │   ├── local_vosk.rs       # Vosk backend stub (coming soon)
 │   ├── local_parakeet.rs   # Parakeet/NVIDIA backend stub (coming soon)
@@ -122,7 +123,7 @@ Responses: `{"status": "ok", "state": "idle"}`, `{"status": "error", "message": 
 
 Path: `~/.config/whisrs/config.toml` (permissions: 0600)
 
-Backends: `deepgram`, `deepgram-streaming`, `groq`, `openai-realtime`, `openai`, `local-whisper`, `local-vosk`, `local-parakeet`
+Backends: `deepgram`, `deepgram-streaming`, `groq`, `openai-realtime`, `openai`, `local-whisper`, `local-vosk`, `local-parakeet`, `asr-sidecar`
 
 Environment variable overrides:
 - `WHISRS_DEEPGRAM_API_KEY` — overrides `[deepgram] api_key`

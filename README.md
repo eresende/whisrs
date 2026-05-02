@@ -13,7 +13,7 @@
 [![Crates.io](https://img.shields.io/crates/v/whisrs)](https://crates.io/crates/whisrs)
 [![docs.rs](https://img.shields.io/docsrs/whisrs)](https://docs.rs/whisrs)
 
-**whisrs is a Linux voice-to-text dictation tool written in Rust that transcribes speech via 6 backends — Groq, Deepgram REST, Deepgram Streaming, OpenAI REST, OpenAI Realtime, and local whisper.cpp — and types it into the focused window. It is the open-source Wispr Flow alternative for Linux.**
+**whisrs is a Linux voice-to-text dictation tool written in Rust that transcribes speech via 7 backends — Groq, Deepgram REST, Deepgram Streaming, OpenAI REST, OpenAI Realtime, local whisper.cpp, and a generic ASR sidecar — and types it into the focused window. It is the open-source Wispr Flow alternative for Linux.**
 
 Press a hotkey, speak, and your words appear at the cursor in any focused app on Wayland, X11, Hyprland, Sway, Niri, GNOME, or KDE. Audio is captured via cpal across PipeWire, PulseAudio, and ALSA. Fully offline local transcription runs in under 500 MB of RAM with `base.en`. Fast, private, open source.
 
@@ -21,7 +21,7 @@ Press a hotkey, speak, and your words appear at the cursor in any focused app on
 
 ## How does whisrs differ from Wispr Flow and Superwhisper?
 
-Wispr Flow and Superwhisper are closed-source dictation apps that don't run on Linux. whisrs is open source (MIT), Linux-native, and ships as a single async Rust process with native keyboard layout support (uinput + XKB), window tracking across Hyprland, Sway, Niri, X11, GNOME, and KDE, and 6 swappable transcription backends — both cloud (Groq, Deepgram, OpenAI) and fully offline (whisper.cpp). [xhisper](https://github.com/imaginalnika/xhisper) proved the concept on Linux; whisrs rebuilds it from scratch in Rust with broader compositor support and a daemon/CLI architecture you can bind to any hotkey.
+Wispr Flow and Superwhisper are closed-source dictation apps that don't run on Linux. whisrs is open source (MIT), Linux-native, and ships as a single async Rust process with native keyboard layout support (uinput + XKB), window tracking across Hyprland, Sway, Niri, X11, GNOME, and KDE, and 7 swappable transcription backends — both cloud (Groq, Deepgram, OpenAI) and fully offline (whisper.cpp, plus a generic ASR sidecar for arbitrary local models). [xhisper](https://github.com/imaginalnika/xhisper) proved the concept on Linux; whisrs rebuilds it from scratch in Rust with broader compositor support and a daemon/CLI architecture you can bind to any hotkey.
 
 ---
 
@@ -156,8 +156,11 @@ bindsym $mod+w exec whisrs toggle
 | **OpenAI Realtime** | Cloud (WebSocket) | True streaming | Paid | Best UX, text as you speak |
 | **OpenAI REST** | Cloud | Batch | Paid | Simple fallback |
 | **Local whisper.cpp** | Local (CPU/GPU) | Sliding window | Free | Privacy, offline use |
+| **ASR sidecar** | Local sidecar | Batch | Free | Bring-your-own local ASR (Moonshine, Parakeet, VibeVoice-ASR, …) |
 
 Groq is the default. For fully offline use, run `whisrs setup` and select **Local > whisper.cpp** — `base.en` (142 MB, ~388 MB RAM) is recommended; `tiny.en` (75 MB) for low-end hardware, `small.en` (466 MB) for higher accuracy.
+
+For local ASR models without a Rust runtime (Moonshine, NVIDIA Parakeet, Microsoft VibeVoice-ASR), use the generic ASR sidecar backend — it talks to a small local HTTP service that hosts the model. See [`contrib/asr-sidecars/`](contrib/asr-sidecars/) for ready-to-run sidecars.
 
 ---
 
@@ -167,7 +170,7 @@ Config file: `~/.config/whisrs/config.toml` — `whisrs setup` writes a working 
 
 ```toml
 [general]
-backend = "groq"   # groq | deepgram-streaming | deepgram | openai-realtime | openai | local-whisper
+backend = "groq"   # groq | deepgram-streaming | deepgram | openai-realtime | openai | local-whisper | asr-sidecar
 language = "en"    # ISO 639-1 or "auto"
 overlay = false    # bottom-screen recording overlay
 
@@ -177,7 +180,7 @@ api_key = "gsk_..."
 
 Env-var overrides: `WHISRS_GROQ_API_KEY`, `WHISRS_DEEPGRAM_API_KEY`, `WHISRS_OPENAI_API_KEY`.
 
-For the full reference (overlay, `[input]`, `[llm]`, `[hotkeys]`, GNOME extension setup), see [docs/configuration.md](docs/configuration.md).
+For the full reference (overlay, `[input]`, `[asr-sidecar]`, `[llm]`, `[hotkeys]`, GNOME extension setup), see [docs/configuration.md](docs/configuration.md).
 
 ---
 
@@ -219,7 +222,7 @@ Yes. whisrs runs natively on both Wayland and X11 across Hyprland, Sway, Niri, i
 
 ## Project Status
 
-whisrs is functional and usable for daily dictation. Streaming transcription, command mode, multi-language support, system tray, OSD overlay, layout-aware injection (incl. AltGr + dead keys), and packaging for AUR / Nix / crates.io all ship today. Local Vosk and Parakeet backends are next.
+whisrs is functional and usable for daily dictation. Streaming transcription, command mode, multi-language support, system tray, OSD overlay, layout-aware injection (incl. AltGr + dead keys), the generic ASR sidecar backend (Moonshine, Parakeet, VibeVoice-ASR), and packaging for AUR / Nix / crates.io all ship today. Native local Vosk and Parakeet backends are next.
 
 Per-release details: [docs/version-roadmap.md](docs/version-roadmap.md).
 

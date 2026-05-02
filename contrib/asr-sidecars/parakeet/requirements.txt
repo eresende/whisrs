@@ -1,0 +1,9 @@
+fastapi>=0.115
+nemo_toolkit[asr]>=2.4
+omegaconf>=2.3
+python-multipart>=0.0.20
+torch
+uvicorn[standard]>=0.30
+
+# For AMD ROCm users only
+# pip install --index-url https://download.pytorch.org/whl/rocm6.4 torch torchvision torchaudio

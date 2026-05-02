@@ -55,6 +55,12 @@ with the lowest latency. Recommended for the best experience.
 .B openai
 OpenAI REST API. Simple HTTP POST, non-streaming fallback.
 .TP
+.B asr-sidecar
+Generic local HTTP ASR sidecar. Sends WAV audio as multipart form
+data and expects a JSON response with a
+.B text
+field.
+.TP
 .B local
 Local transcription via whisper.cpp (requires the
 .B local

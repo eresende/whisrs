@@ -1,0 +1,7 @@
+[general]
+backend = "asr-sidecar"
+language = "en"
+
+[asr-sidecar]
+url = "http://127.0.0.1:8765/transcribe"
+model = "UsefulSensors/moonshine-base"

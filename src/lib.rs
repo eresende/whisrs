@@ -97,6 +97,8 @@ pub struct Config {
     pub local_vosk: Option<LocalVoskConfig>,
     #[serde(default, rename = "local-parakeet")]
     pub local_parakeet: Option<LocalParakeetConfig>,
+    #[serde(default, rename = "asr-sidecar", alias = "asr", alias = "vibevoice")]
+    pub asr_sidecar: Option<AsrSidecarConfig>,
     /// LLM configuration for command mode (text rewriting).
     #[serde(default)]
     pub llm: Option<llm::LlmConfig>,
@@ -340,6 +342,14 @@ pub struct LocalParakeetConfig {
     pub model_path: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsrSidecarConfig {
+    #[serde(default = "default_asr_sidecar_url")]
+    pub url: String,
+    #[serde(default = "default_asr_sidecar_model")]
+    pub model: String,
+}
+
 fn default_backend() -> String {
     "groq".to_string()
 }
@@ -369,6 +379,12 @@ fn default_groq_model() -> String {
 }
 fn default_openai_model() -> String {
     "gpt-4o-mini-transcribe".to_string()
+}
+fn default_asr_sidecar_url() -> String {
+    "http://127.0.0.1:8765/transcribe".to_string()
+}
+fn default_asr_sidecar_model() -> String {
+    "microsoft/VibeVoice-ASR-HF".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -525,10 +541,24 @@ impl Config {
                     });
                 }
             }
+            "asr-sidecar" | "asr" | "vibevoice" => {
+                let url = self
+                    .asr_sidecar
+                    .as_ref()
+                    .map(|v| v.url.trim())
+                    .unwrap_or("");
+                if url.is_empty() {
+                    return Err(WhisrsError::Config(
+                        "ASR sidecar backend selected but no sidecar URL configured.\n\
+                         Add [asr-sidecar] url to config.toml."
+                            .to_string(),
+                    ));
+                }
+            }
             other => {
                 return Err(WhisrsError::Config(format!(
                     "Unknown backend '{other}'. Valid options: deepgram, deepgram-streaming, \
-                     groq, openai, openai-realtime, local-whisper, local-vosk, local-parakeet"
+                     groq, openai, openai-realtime, local-whisper, local-vosk, local-parakeet, asr-sidecar"
                 )));
             }
         }
@@ -575,7 +605,13 @@ impl Config {
             || self.local_vosk.is_some()
             || self.local_parakeet.is_some();
 
-        has_deepgram || has_groq || has_openai || has_local
+        let has_asr_sidecar = self
+            .asr_sidecar
+            .as_ref()
+            .map(|v| !v.url.trim().is_empty())
+            .unwrap_or(false);
+
+        has_deepgram || has_groq || has_openai || has_local || has_asr_sidecar
     }
 }
 
@@ -773,6 +809,7 @@ mod tests {
             local_whisper: None,
             local_vosk: None,
             local_parakeet: None,
+            asr_sidecar: None,
             llm: None,
             hotkeys: None,
             overlay: None,
@@ -814,6 +851,7 @@ mod tests {
             local_whisper: None,
             local_vosk: None,
             local_parakeet: None,
+            asr_sidecar: None,
             llm: None,
             hotkeys: None,
             overlay: None,
@@ -840,12 +878,75 @@ mod tests {
             local_whisper: None,
             local_vosk: None,
             local_parakeet: None,
+            asr_sidecar: None,
             llm: None,
             hotkeys: None,
             overlay: None,
         };
         let result = config.validate();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn config_parse_asr_sidecar_defaults() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            backend = "asr-sidecar"
+
+            [asr-sidecar]
+            "#,
+        )
+        .unwrap();
+
+        let asr_sidecar = config.asr_sidecar.unwrap();
+        assert_eq!(asr_sidecar.url, "http://127.0.0.1:8765/transcribe");
+        assert_eq!(asr_sidecar.model, "microsoft/VibeVoice-ASR-HF");
+    }
+
+    #[test]
+    fn config_validate_asr_sidecar_with_url() {
+        let config = Config {
+            general: GeneralConfig {
+                backend: "asr-sidecar".to_string(),
+                ..Default::default()
+            },
+            audio: Default::default(),
+            input: Default::default(),
+            deepgram: None,
+            groq: None,
+            openai: None,
+            local_whisper: None,
+            local_vosk: None,
+            local_parakeet: None,
+            asr_sidecar: Some(AsrSidecarConfig {
+                url: "http://127.0.0.1:8765/transcribe".to_string(),
+                model: "microsoft/VibeVoice-ASR-HF".to_string(),
+            }),
+            llm: None,
+            hotkeys: None,
+            overlay: None,
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn config_parse_vibevoice_alias() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            backend = "vibevoice"
+
+            [vibevoice]
+            url = "http://127.0.0.1:8765/transcribe"
+            model = "microsoft/VibeVoice-ASR-HF"
+            "#,
+        )
+        .unwrap();
+
+        assert!(config.validate().is_ok());
+        assert!(config.asr_sidecar.is_some());
     }
 
     #[test]
@@ -867,6 +968,7 @@ mod tests {
             local_whisper: None,
             local_vosk: None,
             local_parakeet: None,
+            asr_sidecar: None,
             llm: None,
             hotkeys: None,
             overlay: None,

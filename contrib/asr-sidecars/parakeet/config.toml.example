@@ -1,0 +1,7 @@
+[general]
+backend = "asr-sidecar"
+language = "auto"
+
+[asr-sidecar]
+url = "http://127.0.0.1:8765/transcribe"
+model = "nvidia/parakeet-tdt-0.6b-v3"
