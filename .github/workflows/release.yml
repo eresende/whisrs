@@ -14,17 +14,25 @@ env:
 jobs:
   build:
     name: Build — ${{ matrix.name }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
         include:
           - name: Linux x86_64
-            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
             artifact: whisrs-linux-x86_64
             features: ""
           - name: Linux x86_64 (no local-whisper)
-            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
             artifact: whisrs-linux-x86_64-minimal
+            features: "--no-default-features"
+          - name: Linux aarch64
+            runner: ubuntu-24.04-arm
+            artifact: whisrs-linux-aarch64
+            features: ""
+          - name: Linux aarch64 (no local-whisper)
+            runner: ubuntu-24.04-arm
+            artifact: whisrs-linux-aarch64-minimal
             features: "--no-default-features"
 
     steps:
@@ -34,19 +42,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev pkg-config
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} ${{ matrix.features }}
+        run: cargo build --release ${{ matrix.features }}
 
       - name: Package
         run: |
           mkdir -p staging
-          cp target/${{ matrix.target }}/release/whisrs staging/
-          cp target/${{ matrix.target }}/release/whisrsd staging/
+          cp target/release/whisrs staging/
+          cp target/release/whisrsd staging/
           cp README.md LICENSE staging/
           cp -r contrib staging/
           cd staging
