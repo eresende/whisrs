@@ -27,35 +27,36 @@ Wispr Flow and Superwhisper are closed-source dictation apps that don't run on L
 
 ## Installation
 
-### Quick install (any distro)
+### Quick install (Linux x86_64 / aarch64)
 
 ```bash
 curl -sSL https://y0sif.github.io/whisrs/install.sh | bash
 ```
 
-Or clone and run locally:
+The install script downloads the latest prebuilt tarball, installs `whisrs`/`whisrsd` to `/usr/local/bin`, and runs interactive setup.
 
-```bash
-git clone https://github.com/y0sif/whisrs && cd whisrs && ./install.sh
-```
+Pin a specific version with `WHISRS_VERSION=v0.1.10` or use the cloud-only minimal build with `WHISRS_MINIMAL=1`. Re-run the same command later to upgrade.
 
-The install script handles everything: detects your distro, installs system dependencies, builds the project, and runs interactive setup.
+To **build from source** instead — including custom feature flag combos or unsupported architectures — use `cargo install whisrs --locked` or the `whisrs-git` AUR package.
 
 After install, **press your hotkey** to start recording, **press again** to stop. Text appears at your cursor.
 
 <details>
 <summary><b>Other install methods (pre-built binary, AUR, Cargo, Nix, manual)</b></summary>
 
-### Pre-built binary (Linux x86_64)
+### Pre-built binary (manual)
 
-Each tagged release publishes a tarball on [GitHub Releases](https://github.com/y0sif/whisrs/releases/latest) with both `whisrs` and `whisrsd` plus the contrib files (udev rule, systemd unit, man pages).
+The Quick install above already does this — this section is for users who want to install the tarball by hand.
+
+Each tagged release publishes tarballs on [GitHub Releases](https://github.com/y0sif/whisrs/releases/latest) with both `whisrs` and `whisrsd` plus the contrib files (udev rule, systemd unit, man pages).
 
 ```bash
-# Full build (cloud + local whisper.cpp)
-curl -sSL -o whisrs.tar.gz https://github.com/y0sif/whisrs/releases/latest/download/whisrs-linux-x86_64.tar.gz
+# Pick the artifact for your arch + variant:
+ARCH=x86_64   # or aarch64
+curl -sSL -o whisrs.tar.gz https://github.com/y0sif/whisrs/releases/latest/download/whisrs-linux-${ARCH}.tar.gz
 
-# Or the minimal build (cloud backends only — smaller, no whisper.cpp)
-curl -sSL -o whisrs.tar.gz https://github.com/y0sif/whisrs/releases/latest/download/whisrs-linux-x86_64-minimal.tar.gz
+# Or the minimal build (cloud backends only — no whisper.cpp):
+# curl -sSL -o whisrs.tar.gz https://github.com/y0sif/whisrs/releases/latest/download/whisrs-linux-${ARCH}-minimal.tar.gz
 
 tar xzf whisrs.tar.gz
 sudo install -m755 whisrs whisrsd /usr/local/bin/
@@ -65,10 +66,10 @@ sudo usermod -aG input $USER   # log out / back in for the group change
 whisrs setup
 ```
 
-| Variant | Includes local whisper.cpp | Tarball |
+| Variant | Architectures | Includes local whisper.cpp |
 |---|---|---|
-| `whisrs-linux-x86_64.tar.gz` | yes | full build |
-| `whisrs-linux-x86_64-minimal.tar.gz` | no (cloud backends only) | minimal build |
+| `whisrs-linux-{x86_64,aarch64}.tar.gz` | x86_64, aarch64 | yes (full build) |
+| `whisrs-linux-{x86_64,aarch64}-minimal.tar.gz` | x86_64, aarch64 | no (cloud backends only) |
 
 ### Arch Linux (AUR)
 
@@ -191,6 +192,7 @@ whisrs setup     # Interactive onboarding
 whisrs toggle    # Start/stop recording
 whisrs cancel    # Cancel recording, discard audio
 whisrs status    # Query daemon state
+whisrs restart   # Restart the daemon (uses the systemd user service when present)
 whisrs command   # Command mode: select text + speak instruction → LLM rewrite
 whisrs log       # Show recent transcription history
 whisrs log -n 5  # Show last 5 entries

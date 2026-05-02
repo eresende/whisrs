@@ -1,4 +1,5 @@
 use std::process;
+use std::process::Command as StdCommand;
 
 use clap::{Parser, Subcommand};
 use tokio::io::AsyncWriteExt;
@@ -59,6 +60,8 @@ enum SubCmd {
     },
     /// Command mode: select text, speak an instruction, LLM rewrites it in place
     Command,
+    /// Restart the whisrs daemon (uses the systemd user service when present)
+    Restart,
 }
 
 /// Check if stdout is a TTY for color support.
@@ -114,9 +117,99 @@ async fn main() -> anyhow::Result<()> {
         SubCmd::Command => {
             send_command(Command::CommandMode).await?;
         }
+        SubCmd::Restart => {
+            cmd_restart()?;
+        }
     }
 
     Ok(())
+}
+
+/// Restart the whisrs daemon.
+///
+/// Uses the systemd user service when `whisrs.service` is loaded; otherwise
+/// prints guidance for non-systemd setups. We don't try to `pkill whisrsd`
+/// ourselves because that races with respawn and silently breaks for users
+/// who launched the daemon under tmux/foot/etc.
+fn cmd_restart() -> anyhow::Result<()> {
+    let use_color = is_tty();
+
+    if has_systemd_unit() {
+        if use_color {
+            println!("{BOLD}Restarting whisrs daemon (systemd)…{RESET}");
+        } else {
+            println!("Restarting whisrs daemon (systemd)…");
+        }
+
+        let status = StdCommand::new("systemctl")
+            .args(["--user", "restart", "whisrs.service"])
+            .status()?;
+
+        if !status.success() {
+            if use_color {
+                eprintln!("{RED}systemctl --user restart whisrs.service failed.{RESET}");
+            } else {
+                eprintln!("systemctl --user restart whisrs.service failed.");
+            }
+            process::exit(1);
+        }
+
+        if use_color {
+            println!("{GREEN}Daemon restarted.{RESET}");
+        } else {
+            println!("Daemon restarted.");
+        }
+        return Ok(());
+    }
+
+    if use_color {
+        eprintln!(
+            "{YELLOW}No whisrs systemd user unit detected.{RESET}\n\
+             \n\
+             Install the systemd unit (run `whisrs setup` and accept the systemd step),\n\
+             or restart the daemon manually:\n\
+             \n\
+             \x20 pkill whisrsd; sleep 0.2; whisrsd &"
+        );
+    } else {
+        eprintln!(
+            "No whisrs systemd user unit detected.\n\
+             \n\
+             Install the systemd unit (run `whisrs setup` and accept the systemd step),\n\
+             or restart the daemon manually:\n\
+             \n\
+             \x20 pkill whisrsd; sleep 0.2; whisrsd &"
+        );
+    }
+    process::exit(1);
+}
+
+/// Returns `true` when `whisrs.service` is loaded as a user unit.
+fn has_systemd_unit() -> bool {
+    // `is-enabled` exits 0 for enabled/static/linked units and non-zero when
+    // the unit isn't loaded. It works whether the service is currently active
+    // or not, which matches `whisrs restart`'s "start or restart" semantics.
+    let Ok(output) = StdCommand::new("systemctl")
+        .args(["--user", "is-enabled", "whisrs.service"])
+        .output()
+    else {
+        return false;
+    };
+
+    if output.status.success() {
+        return true;
+    }
+
+    // Fall back to `list-unit-files` for the static/linked case where
+    // `is-enabled` may exit non-zero on some distros.
+    let Ok(output) = StdCommand::new("systemctl")
+        .args(["--user", "list-unit-files", "whisrs.service"])
+        .output()
+    else {
+        return false;
+    };
+
+    output.status.success() && String::from_utf8_lossy(&output.stdout).contains("whisrs.service")
 }
 
 /// Connect to the daemon and send a command, printing the response.
