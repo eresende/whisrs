@@ -191,6 +191,7 @@ whisrs setup     # Interactive onboarding
 whisrs toggle    # Start/stop recording
 whisrs cancel    # Cancel recording, discard audio
 whisrs status    # Query daemon state
+whisrs restart   # Restart the daemon (uses the systemd user service when present)
 whisrs command   # Command mode: select text + speak instruction → LLM rewrite
 whisrs log       # Show recent transcription history
 whisrs log -n 5  # Show last 5 entries

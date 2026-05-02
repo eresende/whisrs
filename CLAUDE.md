@@ -33,6 +33,7 @@ systemctl --user enable --now whisrs.service
 whisrs toggle    # start/stop recording
 whisrs cancel    # cancel and discard audio
 whisrs status    # query daemon state
+whisrs restart   # restart the daemon (wraps systemctl --user when present)
 
 # Debug logging
 set -x RUST_LOG debug; whisrsd

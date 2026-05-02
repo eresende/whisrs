@@ -37,6 +37,14 @@ Query the daemon state. Prints one of:
 .BR recording ,
 or
 .BR transcribing .
+.TP
+.B restart
+Restart the whisrs daemon. Uses
+.B systemctl --user restart whisrs.service
+when the systemd user unit is loaded; otherwise prints guidance for
+manual restart. Does not require the daemon to be running \(em
+.B restart
+will start a stopped service.
 .SH ENVIRONMENT
 .TP
 .B WHISRS_GROQ_API_KEY
