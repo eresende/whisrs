@@ -1,6 +1,6 @@
 [package]
 name = "whisrs"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2021"
 description = "Open source Wispr Flow alternative for Linux — voice dictation for Wayland, X11, Hyprland, Sway, GNOME, KDE with offline whisper.cpp and cloud backends"
 license = "MIT"
