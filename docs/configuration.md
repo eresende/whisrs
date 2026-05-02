@@ -8,7 +8,7 @@ The interactive `whisrs setup` will write a working file for you. The reference 
 
 ```toml
 [general]
-backend = "groq"            # groq | deepgram-streaming | deepgram | openai-realtime | openai | local-whisper
+backend = "groq"            # groq | deepgram-streaming | deepgram | openai-realtime | openai | local-whisper | asr-sidecar
 language = "en"             # ISO 639-1 or "auto"
 silence_timeout_ms = 2000   # auto-stop after silence (streaming only)
 notify = true               # desktop notifications
@@ -65,6 +65,14 @@ model = "gpt-4o-mini-transcribe"
 
 [local-whisper]
 model_path = "~/.local/share/whisrs/models/ggml-base.en.bin"
+
+# Generic local ASR sidecar — talks to a small HTTP service that hosts the
+# model (Moonshine, NVIDIA Parakeet, Microsoft VibeVoice-ASR, …). Keeps
+# Python/PyTorch out of the Rust daemon. See contrib/asr-sidecars/ for
+# ready-to-run sidecars and the wire-format contract.
+[asr-sidecar]
+url = "http://127.0.0.1:8765/transcribe"
+model = "microsoft/VibeVoice-ASR-HF"
 
 # Command mode: LLM for voice-driven text rewriting
 [llm]

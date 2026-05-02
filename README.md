@@ -13,7 +13,7 @@
 [![Crates.io](https://img.shields.io/crates/v/whisrs)](https://crates.io/crates/whisrs)
 [![docs.rs](https://img.shields.io/docsrs/whisrs)](https://docs.rs/whisrs)
 
-**whisrs is a Linux voice-to-text dictation tool written in Rust that transcribes speech via 6 backends — Groq, Deepgram REST, Deepgram Streaming, OpenAI REST, OpenAI Realtime, and local whisper.cpp — and types it into the focused window. It is the open-source Wispr Flow alternative for Linux.**
+**whisrs is a Linux voice-to-text dictation tool written in Rust that transcribes speech via 7 backends — Groq, Deepgram REST, Deepgram Streaming, OpenAI REST, OpenAI Realtime, local whisper.cpp, and a generic ASR sidecar — and types it into the focused window. It is the open-source Wispr Flow alternative for Linux.**
 
 Press a hotkey, speak, and your words appear at the cursor in any focused app on Wayland, X11, Hyprland, Sway, GNOME, or KDE. Audio is captured via cpal across PipeWire, PulseAudio, and ALSA. Fully offline local transcription runs in under 500 MB of RAM with `base.en`. Fast, private, open source.
 
@@ -21,7 +21,7 @@ Press a hotkey, speak, and your words appear at the cursor in any focused app on
 
 ## How does whisrs differ from Wispr Flow and Superwhisper?
 
-Wispr Flow and Superwhisper are closed-source dictation apps that don't run on Linux. whisrs is open source (MIT), Linux-native, and ships as a single async Rust process with native keyboard layout support (uinput + XKB), window tracking across Hyprland, Sway, X11, GNOME, and KDE, and 6 swappable transcription backends — both cloud (Groq, Deepgram, OpenAI) and fully offline (whisper.cpp). [xhisper](https://github.com/imaginalnika/xhisper) proved the concept on Linux; whisrs rebuilds it from scratch in Rust with broader compositor support and a daemon/CLI architecture you can bind to any hotkey.
+Wispr Flow and Superwhisper are closed-source dictation apps that don't run on Linux. whisrs is open source (MIT), Linux-native, and ships as a single async Rust process with native keyboard layout support (uinput + XKB), window tracking across Hyprland, Sway, X11, GNOME, and KDE, and 7 swappable transcription backends — both cloud (Groq, Deepgram, OpenAI) and fully offline (whisper.cpp, plus a generic ASR sidecar for arbitrary local models). [xhisper](https://github.com/imaginalnika/xhisper) proved the concept on Linux; whisrs rebuilds it from scratch in Rust with broader compositor support and a daemon/CLI architecture you can bind to any hotkey.
 
 ---
 
@@ -156,52 +156,11 @@ bindsym $mod+w exec whisrs toggle
 | **OpenAI Realtime** | Cloud (WebSocket) | True streaming | Paid | Best UX, text as you speak |
 | **OpenAI REST** | Cloud | Batch | Paid | Simple fallback |
 | **Local whisper.cpp** | Local (CPU/GPU) | Sliding window | Free | Privacy, offline use |
-| **ASR sidecar** | Local sidecar | Batch | Free | Custom local ASR models |
+| **ASR sidecar** | Local sidecar | Batch | Free | Bring-your-own local ASR (Moonshine, Parakeet, VibeVoice-ASR, …) |
 
-Groq is the default. Fast, free tier, good accuracy with `whisper-large-v3-turbo`.
+Groq is the default. For fully offline use, run `whisrs setup` and select **Local > whisper.cpp** — `base.en` (142 MB, ~388 MB RAM) is recommended; `tiny.en` (75 MB) for low-end hardware, `small.en` (466 MB) for higher accuracy.
 
-Deepgram offers $200 in free credits on signup (no credit card required) and supports 60+ languages with the Nova-3 model. The streaming backend provides true real-time transcription over WebSocket.
-
-OpenAI Realtime is the premium option: true streaming over WebSocket means text appears at your cursor while you're still speaking.
-
-The ASR sidecar backend sends the recorded WAV to a local HTTP service and types the plain text it returns. This keeps Python/PyTorch/vLLM dependencies out of the Rust daemon and lets you use models such as VibeVoice-ASR, Moonshine, Distil-Whisper, or faster-whisper.
-
-### Local whisper.cpp
-
-Run transcription entirely on your machine. No API key, no internet, no data leaves your device. Included in every build.
-
-```bash
-whisrs setup   # select Local > whisper.cpp, pick a model, download automatically
-```
-
-| Model | Size | RAM | Speed (CPU) | Accuracy |
-|---|---|---|---|---|
-| tiny.en | 75 MB | ~273 MB | Real-time | Decent |
-| base.en | 142 MB | ~388 MB | Real-time | Good (recommended) |
-| small.en | 466 MB | ~852 MB | Borderline | Very good |
-
-### ASR sidecar
-
-The `asr-sidecar` backend expects a local HTTP endpoint that accepts multipart form data:
-
-- `file`: WAV audio
-- `model`: model id, default `microsoft/VibeVoice-ASR-HF`
-- `language`: ISO 639-1 language code when not set to `auto`
-- `hotwords`: optional vocabulary/context prompt
-
-The sidecar should return JSON:
-
-```json
-{ "text": "transcribed text" }
-```
-
-Example sidecars are available under `contrib/asr-sidecars/`; each one has its
-own setup and GPU notes.
-
-| Sidecar | Default model | Best for |
-|---|---|---|
-| `moonshine` | `UsefulSensors/moonshine-base` | Fast lightweight English dictation |
-| `vibevoice` | `microsoft/VibeVoice-ASR-HF` | Long-form local transcription experiments |
+For local ASR models without a Rust runtime (Moonshine, NVIDIA Parakeet, Microsoft VibeVoice-ASR), use the generic ASR sidecar backend — it talks to a small local HTTP service that hosts the model. See [`contrib/asr-sidecars/`](contrib/asr-sidecars/) for ready-to-run sidecars.
 
 ---
 
@@ -211,81 +170,17 @@ Config file: `~/.config/whisrs/config.toml` — `whisrs setup` writes a working 
 
 ```toml
 [general]
-backend = "groq"            # groq | deepgram-streaming | deepgram | openai-realtime | openai | local-whisper | asr-sidecar
-language = "en"             # ISO 639-1 or "auto"
-silence_timeout_ms = 2000   # auto-stop after silence (streaming only)
-notify = true               # desktop notifications
-remove_filler_words = true  # strip "um", "uh", "you know", etc.
-filler_words = []           # custom list (empty = use built-in defaults)
-audio_feedback = true       # play tones on record start/stop/done
-audio_feedback_volume = 0.5 # 0.0 to 1.0
-vocabulary = ["whisrs", "Hyprland"]  # custom terms for better transcription accuracy
-prompt = "Speech is in English or Spanish. Transcribe in the language spoken; never translate."  # optional sentence-style context, prepended to vocabulary
-tray = true                 # system tray icon (requires SNI host like waybar)
-overlay = false             # bottom-screen recording overlay (Hyprland/Sway, GNOME extension)
-
-# Optional — controls overlay appearance when enabled.
-# Defaults to a 100×40 pill with the "carbon" theme.
-# When the overlay is on, recording/transcribing toast notifications are
-# auto-suppressed (errors still pop) so the same event isn't double-signaled.
-[overlay]
-theme = "carbon"            # "carbon" (default) | "ember" | "cyan" | "custom"
-width = 100                 # 90..=120 (clamped)
-height = 40                 # 36..=48 (clamped)
-
-# When theme = "custom", these override the named theme. Hex strings:
-# #RGB, #RRGGBB, or #RRGGBBAA. Anything missing falls back to carbon.
-# [overlay.colors]
-# background   = "#0E0E10EB"
-# ring         = "#3A3A4050"
-# recording    = "#F0EDF5"
-# transcribing = "#9CA3AF"
-# glow         = "#F0EDF5"
-
-[audio]
-device = "default"
-
-[input]
-# Inter-key delay for the virtual keyboard (uinput). Raise this if a TUI
-# drops characters while whisrs is typing — e.g. Node/Ink-based apps like
-# Claude Code in raw mode. Default: 2.
-key_delay_ms = 2
+backend = "groq"   # groq | deepgram-streaming | deepgram | openai-realtime | openai | local-whisper | asr-sidecar
+language = "en"    # ISO 639-1 or "auto"
+overlay = false    # bottom-screen recording overlay
 
 [groq]
 api_key = "gsk_..."
-model = "whisper-large-v3-turbo"
-
-[deepgram]
-api_key = "..."
-model = "nova-3"
-
-[openai]
-api_key = "sk-..."
-model = "gpt-4o-mini-transcribe"
-
-[local-whisper]
-model_path = "~/.local/share/whisrs/models/ggml-base.en.bin"
-
-[asr-sidecar]
-url = "http://127.0.0.1:8765/transcribe"
-model = "microsoft/VibeVoice-ASR-HF"
-
-# Command mode: LLM for voice-driven text rewriting
-[llm]
-api_key = "sk-..."
-model = "gpt-4o-mini"
-api_url = "https://api.openai.com/v1/chat/completions"
-
-# Built-in global hotkeys (optional, works without WM keybinds)
-[hotkeys]
-toggle = "Super+Shift+W"
-cancel = "Super+Shift+D"
-command = "Super+Shift+G"
 ```
 
 Env-var overrides: `WHISRS_GROQ_API_KEY`, `WHISRS_DEEPGRAM_API_KEY`, `WHISRS_OPENAI_API_KEY`.
 
-For the full reference (overlay, `[input]`, `[llm]`, `[hotkeys]`, GNOME extension setup), see [docs/configuration.md](docs/configuration.md).
+For the full reference (overlay, `[input]`, `[asr-sidecar]`, `[llm]`, `[hotkeys]`, GNOME extension setup), see [docs/configuration.md](docs/configuration.md).
 
 ---
 
@@ -326,27 +221,9 @@ Yes. whisrs runs natively on both Wayland and X11 across Hyprland, Sway, i3, GNO
 
 ## Project Status
 
-whisrs is functional and usable for daily dictation. The core features work:
+whisrs is functional and usable for daily dictation. Streaming transcription, command mode, multi-language support, system tray, OSD overlay, layout-aware injection (incl. AltGr + dead keys), the generic ASR sidecar backend (Moonshine, Parakeet, VibeVoice-ASR), and packaging for AUR / Nix / crates.io all ship today. Native local Vosk and Parakeet backends are next.
 
-- [x] Daemon + CLI architecture
-- [x] Audio capture and WAV encoding
-- [x] Groq, Deepgram (REST + streaming), OpenAI REST, OpenAI Realtime, and ASR sidecar backends
-- [x] Local whisper.cpp backend (sliding window, prompt conditioning, model download)
-- [x] Layout-aware keyboard injection (uinput + XKB)
-- [x] Wayland/X11 clipboard with save/restore
-- [x] Window tracking (Hyprland, Sway, X11, GNOME, KDE)
-- [x] Desktop notifications and audio feedback
-- [x] Interactive setup with LLM provider selection
-- [x] Filler word removal
-- [x] Transcription history (`whisrs log`)
-- [x] Multi-language support (18 languages + auto-detect)
-- [x] Custom vocabulary for improved transcription accuracy
-- [x] LLM command mode (select text + voice instruction → rewrite)
-- [x] System tray indicator (idle/recording/transcribing)
-- [x] Configurable global hotkeys via evdev
-- [x] Packaging ([AUR](https://aur.archlinux.org/packages/whisrs-git), Nix flake, crates.io)
-- [ ] Local Vosk backend
-- [ ] Local Parakeet backend (NVIDIA)
+Per-release details: [docs/version-roadmap.md](docs/version-roadmap.md).
 
 ---
 
