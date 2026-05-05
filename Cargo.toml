@@ -1,3 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    ".",
+    "crates/asr-dedup",
+    "crates/prompt-echo",
+    "crates/xkb-type",
+    "crates/audio-gate",
+    "crates/filler-remove",
+]
+
 [package]
 name = "whisrs"
 version = "0.1.11"
