@@ -1,0 +1,15 @@
+[package]
+name = "prompt-echo"
+version = "0.1.0"
+edition = "2021"
+description = "Detect Whisper prompt-regurgitation hallucination on silent audio"
+repository = "https://github.com/y0sif/whisrs/tree/main/crates/prompt-echo"
+license = "MIT"
+keywords = ["whisper", "asr", "hallucination", "prompt", "speech-to-text"]
+categories = ["text-processing"]
+
+[workspace]
+# Standalone — prevent Cargo from walking up to the root workspace
+
+[dependencies]
+# None — pure std
