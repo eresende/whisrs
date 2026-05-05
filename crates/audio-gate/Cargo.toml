@@ -1,0 +1,12 @@
+[package]
+name = "audio-gate"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight RMS-based silence detection and auto-stop for audio capture"
+repository = "https://github.com/y0sif/whisrs/tree/main/crates/audio-gate"
+license = "MIT"
+keywords = ["audio", "vad", "silence", "rms", "detection"]
+categories = ["multimedia::audio"]
+
+[dependencies]
+# None — pure std
