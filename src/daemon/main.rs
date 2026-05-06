@@ -7,6 +7,7 @@ use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
+use prompt_echo::is_prompt_echo;
 use whisrs::audio::capture::{AudioCaptureHandle, SAMPLE_RATE};
 use whisrs::audio::feedback;
 use whisrs::audio::silence::{audio_gate_reason, AutoStopDetector, SILENCE_RMS_THRESHOLD};
@@ -15,7 +16,6 @@ use whisrs::input::clipboard::ClipboardOps;
 use whisrs::input::ClipboardHandler;
 use whisrs::llm;
 use whisrs::post_processing::filler::remove_filler_words;
-use whisrs::post_processing::prompt_echo::is_prompt_echo;
 use whisrs::state::{Action, StateMachine};
 use whisrs::transcription::asr_sidecar::AsrSidecarBackend;
 use whisrs::transcription::deepgram::{DeepgramRestBackend, DeepgramStreamingBackend};
@@ -1279,7 +1279,7 @@ async fn process_recording_batch(
         .is_some_and(|prompt| is_prompt_echo(&text, prompt))
     {
         warn!(
-            "discarding likely prompt-echo response ({} chars) — see post_processing::prompt_echo",
+            "discarding likely prompt-echo response ({} chars) — see prompt_echo crate",
             text.len()
         );
         if context.notify_state() {
