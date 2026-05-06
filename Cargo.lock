@@ -3451,6 +3451,7 @@ version = "0.1.11"
 dependencies = [
  "anyhow",
  "arboard",
+ "asr-dedup",
  "async-trait",
  "base64",
  "chrono",

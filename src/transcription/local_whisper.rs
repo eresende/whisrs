@@ -10,11 +10,11 @@
 
 use std::sync::Arc;
 
+use asr_dedup::TextDedup;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use super::dedup::DeduplicationTracker;
 use super::{TranscriptionBackend, TranscriptionConfig};
 use crate::audio::AudioChunk;
 
@@ -175,7 +175,7 @@ impl TranscriptionBackend for LocalWhisperBackend {
             .ok_or_else(|| anyhow::anyhow!("whisper model not loaded from {}", self.model_path))?;
 
         let mut buffer: Vec<i16> = Vec::new();
-        let mut dedup = DeduplicationTracker::new();
+        let mut dedup = TextDedup::new();
         let mut next_process_at = INITIAL_WINDOW_SAMPLES;
         let mut last_processed_end: usize = 0;
         // Previous full transcription fed as prompt to the next window.
