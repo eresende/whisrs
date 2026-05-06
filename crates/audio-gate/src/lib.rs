@@ -45,6 +45,7 @@ pub fn is_silent(samples: &[i16], threshold: f64) -> bool {
 /// Returned by [`audio_gate_reason`]; carries a short human-readable label
 /// that the daemon logs and surfaces in notifications.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GateReason {
     /// Buffer contains zero samples.
     Empty,

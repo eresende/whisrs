@@ -46,6 +46,9 @@ match audio_gate_reason(&samples, 16_000, 300, SILENCE_RMS_THRESHOLD) {
     Some(GateReason::Empty) => eprintln!("empty buffer — discard"),
     Some(GateReason::TooShort) => eprintln!("recording too short — discard"),
     Some(GateReason::Silent) => eprintln!("no speech detected — discard"),
+    Some(GateReason::Invalid) => eprintln!("invalid config (e.g. sample_rate == 0) — discard"),
+    // `GateReason` is `#[non_exhaustive]`; future variants land here.
+    Some(_) => eprintln!("unknown gate reason — discard"),
     None => send_to_transcription_api(&samples),
 }
 ```
