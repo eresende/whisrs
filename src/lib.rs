@@ -7,7 +7,6 @@ pub mod hotkey;
 pub mod input;
 pub mod llm;
 pub mod overlay;
-pub mod post_processing;
 pub mod state;
 pub mod transcription;
 pub mod tray;

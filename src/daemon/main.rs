@@ -7,6 +7,7 @@ use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
+use filler_remove::FillerFilter;
 use prompt_echo::is_prompt_echo;
 use whisrs::audio::capture::{AudioCaptureHandle, SAMPLE_RATE};
 use whisrs::audio::feedback;
@@ -15,7 +16,6 @@ use whisrs::history::{self, HistoryEntry};
 use whisrs::input::clipboard::ClipboardOps;
 use whisrs::input::ClipboardHandler;
 use whisrs::llm;
-use whisrs::post_processing::filler::remove_filler_words;
 use whisrs::state::{Action, StateMachine};
 use whisrs::transcription::asr_sidecar::AsrSidecarBackend;
 use whisrs::transcription::deepgram::{DeepgramRestBackend, DeepgramStreamingBackend};
@@ -1005,6 +1005,17 @@ async fn run_streaming_pipeline(
     let (audio_tx, backend_rx) = tokio::sync::mpsc::channel::<Vec<i16>>(256);
     let (text_tx, mut text_rx) = tokio::sync::mpsc::channel::<String>(64);
 
+    // Build the filler filter once for the lifetime of this pipeline so the
+    // batch loop below isn't recompiling regexes on every typed delta.
+    let filler_filter = if filler_enabled {
+        Some(
+            FillerFilter::new(&filler_words)
+                .context("invalid custom filler word in configuration")?,
+        )
+    } else {
+        None
+    };
+
     // Spawn the transcription backend.
     let config_clone = config.clone();
     let backend_task = tokio::spawn(async move {
@@ -1038,8 +1049,8 @@ async fn run_streaming_pipeline(
             }
 
             // Apply filler word removal if enabled.
-            if filler_enabled {
-                batch = remove_filler_words(&batch, &filler_words);
+            if let Some(filter) = filler_filter.as_ref() {
+                batch = filter.apply(&batch);
                 if batch.is_empty() {
                     continue;
                 }
@@ -1293,7 +1304,9 @@ async fn process_recording_batch(
 
     // Apply filler word removal if enabled.
     let text = if context.config.general.remove_filler_words {
-        let cleaned = remove_filler_words(&text, &context.config.general.filler_words);
+        let filter = FillerFilter::new(&context.config.general.filler_words)
+            .context("invalid custom filler word in configuration")?;
+        let cleaned = filter.apply(&text);
         if cleaned != text {
             info!(
                 "filler removal: {} chars -> {} chars",

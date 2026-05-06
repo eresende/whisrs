@@ -42,6 +42,7 @@ overlay = ["dep:smithay-client-toolkit", "dep:wayland-client", "dep:tiny-skia"]
 [dependencies]
 anyhow = "1"
 arboard = "3"
+filler-remove = { path = "crates/filler-remove" }
 prompt-echo = { path = "crates/prompt-echo" }
 async-trait = "0.1"
 base64 = "0.22"

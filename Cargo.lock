@@ -3459,6 +3459,7 @@ dependencies = [
  "dialoguer",
  "dirs",
  "evdev",
+ "filler-remove",
  "futures-util",
  "hound",
  "indicatif",
