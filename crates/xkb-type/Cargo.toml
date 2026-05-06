@@ -1,0 +1,26 @@
+[package]
+name = "xkb-type"
+version = "0.1.0"
+edition = "2021"
+description = "Virtual keyboard typing via evdev/uinput with XKB layout-aware key mapping"
+license = "MIT"
+repository = "https://github.com/y0sif/whisrs"
+readme = "README.md"
+keywords = ["keyboard", "uinput", "xkb", "linux", "wayland"]
+categories = ["os::linux-apis", "hardware-support"]
+
+[features]
+default = []
+logging = ["dep:log"]
+arboard = ["dep:arboard"]
+
+[dependencies]
+evdev = "0.12"
+xkbcommon = "0.8"
+anyhow = "1"
+thiserror = "2"
+serde_json = "1"
+log = { version = "0.4", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { version = "3", optional = true }
