@@ -72,18 +72,28 @@ impl GateReason {
 /// Whisper variants (whisper-1, gpt-4o-*-transcribe) hallucinate verbatim
 /// chunks of the supplied `prompt` when the audio carries no speech, so this
 /// gate is the first line of defence against prompt-echo output.
+///
+/// # Contract
+///
+/// `sample_rate` is expected to be the recording sample rate in Hz (e.g.
+/// `16_000`) and must be greater than zero. If `sample_rate == 0` is passed
+/// (a misconfiguration) the function does **not** panic: it returns
+/// `Some(GateReason::TooShort)`, since there is no way to compute a
+/// meaningful duration without a sample rate, and the safest default is to
+/// treat the buffer as ungatable and skip it.
 pub fn audio_gate_reason(
     samples: &[i16],
     sample_rate: u32,
     min_duration_ms: u64,
     threshold: f64,
 ) -> Option<GateReason> {
-    debug_assert!(
-        sample_rate > 0,
-        "audio_gate_reason requires sample_rate > 0"
-    );
     if samples.is_empty() {
         return Some(GateReason::Empty);
+    }
+    if sample_rate == 0 {
+        // Cannot compute duration without a sample rate; conservatively skip
+        // the buffer rather than dividing by zero.
+        return Some(GateReason::TooShort);
     }
     let duration_ms = (samples.len() as u64).saturating_mul(1000) / sample_rate as u64;
     if duration_ms < min_duration_ms {
@@ -301,6 +311,23 @@ mod tests {
             .map(|i| ((i as f64 * 0.1).sin() * 16_000.0) as i16)
             .collect();
         assert_eq!(audio_gate_reason(&samples, 16_000, 300, 0.005), None);
+    }
+
+    #[test]
+    fn gate_handles_zero_sample_rate_without_panic() {
+        // Non-empty buffer with sample_rate = 0 must not panic (would have
+        // divided by zero pre-fix). Conservatively reports TooShort.
+        let samples: Vec<i16> = vec![10_000; 1_600];
+        assert_eq!(
+            audio_gate_reason(&samples, 0, 300, 0.005),
+            Some(GateReason::TooShort)
+        );
+
+        // Empty buffer with sample_rate = 0 still hits the Empty path first.
+        assert_eq!(
+            audio_gate_reason(&[], 0, 300, 0.005),
+            Some(GateReason::Empty)
+        );
     }
 
     #[test]
