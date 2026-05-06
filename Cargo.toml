@@ -5,7 +5,7 @@ members = [
     "crates/asr-dedup",
     "crates/prompt-echo",
     "crates/xkb-type",
-    "crates/audio-gate",
+    "crates/audio-silence-gate",
     "crates/filler-remove",
 ]
 
@@ -42,7 +42,7 @@ overlay = ["dep:smithay-client-toolkit", "dep:wayland-client", "dep:tiny-skia"]
 [dependencies]
 anyhow = "1"
 asr-dedup = { path = "crates/asr-dedup" }
-audio-gate = { path = "crates/audio-gate" }
+audio-silence-gate = { path = "crates/audio-silence-gate" }
 filler-remove = { path = "crates/filler-remove" }
 prompt-echo = { path = "crates/prompt-echo" }
 xkb-type = { path = "crates/xkb-type", features = ["arboard"] }

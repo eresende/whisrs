@@ -197,7 +197,7 @@ impl TranscriptionBackend for LocalWhisperBackend {
                 let window = buffer[window_start..window_end].to_vec();
 
                 // Skip silent windows.
-                if !audio_gate::is_silent(&window, SILENCE_THRESHOLD) {
+                if !audio_silence_gate::is_silent(&window, SILENCE_THRESHOLD) {
                     let samples_f32 = i16_to_f32(&window);
                     let ctx_clone = Arc::clone(ctx);
                     let lang = config.language.clone();
@@ -253,7 +253,8 @@ impl TranscriptionBackend for LocalWhisperBackend {
             };
             let remaining = &buffer[remaining_start..];
 
-            if !remaining.is_empty() && !audio_gate::is_silent(remaining, SILENCE_THRESHOLD) {
+            if !remaining.is_empty() && !audio_silence_gate::is_silent(remaining, SILENCE_THRESHOLD)
+            {
                 let samples_f32 = i16_to_f32(remaining);
                 let ctx_clone = Arc::clone(ctx);
                 let lang = config.language.clone();

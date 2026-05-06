@@ -1,10 +1,10 @@
 [package]
-name = "audio-gate"
+name = "audio-silence-gate"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.70"
 description = "Lightweight RMS-based silence detection and auto-stop for audio capture"
-repository = "https://github.com/y0sif/whisrs/tree/main/crates/audio-gate"
+repository = "https://github.com/y0sif/whisrs/tree/main/crates/audio-silence-gate"
 license = "MIT"
 readme = "README.md"
 keywords = ["audio", "vad", "silence", "rms", "detection"]
