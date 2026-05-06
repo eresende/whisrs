@@ -2,9 +2,11 @@
 name = "asr-dedup"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.80"
 description = "Deduplication strategies for chunked/sliding-window ASR transcription"
 repository = "https://github.com/y0sif/whisrs/tree/main/crates/asr-dedup"
 license = "MIT"
+readme = "README.md"
 keywords = ["asr", "whisper", "dedup", "speech-to-text", "transcription"]
 categories = ["text-processing"]
 
