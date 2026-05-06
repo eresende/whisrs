@@ -41,11 +41,11 @@ overlay = ["dep:smithay-client-toolkit", "dep:wayland-client", "dep:tiny-skia"]
 
 [dependencies]
 anyhow = "1"
-asr-dedup = { path = "crates/asr-dedup" }
-audio-silence-gate = { path = "crates/audio-silence-gate" }
-filler-remove = { path = "crates/filler-remove" }
-prompt-echo = { path = "crates/prompt-echo" }
-xkb-type = { path = "crates/xkb-type", features = ["arboard"] }
+asr-dedup = { path = "crates/asr-dedup", version = "0.1" }
+audio-silence-gate = { path = "crates/audio-silence-gate", version = "0.1" }
+filler-remove = { path = "crates/filler-remove", version = "0.1" }
+prompt-echo = { path = "crates/prompt-echo", version = "0.1" }
+xkb-type = { path = "crates/xkb-type", version = "0.1", features = ["arboard"] }
 async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
