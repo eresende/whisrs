@@ -1,4 +1,6 @@
 /target
+crates/*/target/
+crates/*/Cargo.lock
 /docs/*
 !/docs/comparison.md
 !/docs/configuration.md
