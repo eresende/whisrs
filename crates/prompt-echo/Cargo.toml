@@ -8,8 +8,5 @@ license = "MIT"
 keywords = ["whisper", "asr", "hallucination", "prompt", "speech-to-text"]
 categories = ["text-processing"]
 
-[workspace]
-# Standalone — prevent Cargo from walking up to the root workspace
-
 [dependencies]
 # None — pure std
