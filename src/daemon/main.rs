@@ -13,8 +13,6 @@ use prompt_echo::is_prompt_echo;
 use whisrs::audio::capture::{AudioCaptureHandle, SAMPLE_RATE};
 use whisrs::audio::feedback;
 use whisrs::history::{self, HistoryEntry};
-use whisrs::input::clipboard::ClipboardOps;
-use whisrs::input::ClipboardHandler;
 use whisrs::llm;
 use whisrs::state::{Action, StateMachine};
 use whisrs::transcription::asr_sidecar::AsrSidecarBackend;
@@ -1387,15 +1385,7 @@ fn format_api_error(err: &anyhow::Error) -> String {
 
 /// Type text at the cursor using uinput (keyboard injection) or clipboard paste.
 fn type_text_at_cursor(text: &str, key_delay: std::time::Duration) -> Result<()> {
-    use whisrs::input::clipboard::ClipboardOps;
-    use whisrs::input::keymap::XkbKeymap;
-    use whisrs::input::uinput::UinputKeyboard;
-    use whisrs::input::KeyInjector;
-
-    let detected_layout = whisrs::input::keymap::KeyboardLayout::detect();
-    let keymap = XkbKeymap::from_layout(&detected_layout).context("failed to build XKB keymap")?;
-    let clipboard = ClipboardOps::detect();
-    let mut keyboard = match UinputKeyboard::new(keymap, clipboard, key_delay) {
+    let mut keyboard = match xkb_type::Keyboard::new(key_delay) {
         Ok(kb) => kb,
         Err(e) => {
             let msg = format!("{e:#}");
@@ -1511,7 +1501,7 @@ async fn command_mode_start(
     // Try primary selection first (works everywhere, no key simulation needed),
     // then fall back to clipboard copy (Ctrl+C or Ctrl+Shift+C for terminals).
     info!("command mode: getting selected text");
-    let clipboard = ClipboardOps::detect();
+    let clipboard = xkb_type::default_clipboard();
 
     // Save current clipboard content so we can restore it later.
     let saved_clipboard = clipboard.get_text().unwrap_or_default();
@@ -1773,7 +1763,7 @@ async fn command_mode_background(
 
     // Paste the result, replacing the original selection.
     info!("command mode: pasting {} chars", result.len());
-    let clipboard = ClipboardOps::detect();
+    let clipboard = xkb_type::default_clipboard();
 
     if let Err(e) = clipboard.set_text(&result) {
         error!("command mode: failed to set clipboard: {e}");
@@ -1803,7 +1793,7 @@ async fn command_mode_background(
 
     // Restore original clipboard after a delay.
     let saved = cmd_ctx.saved_clipboard.clone();
-    let clipboard_restore = ClipboardOps::detect();
+    let clipboard_restore = xkb_type::default_clipboard();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         if let Err(e) = clipboard_restore.set_text(&saved) {

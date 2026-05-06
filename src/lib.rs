@@ -4,7 +4,6 @@ pub mod audio;
 pub mod config;
 pub mod history;
 pub mod hotkey;
-pub mod input;
 pub mod llm;
 pub mod overlay;
 pub mod state;

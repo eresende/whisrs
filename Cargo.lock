@@ -3450,7 +3450,6 @@ name = "whisrs"
 version = "0.1.11"
 dependencies = [
  "anyhow",
- "arboard",
  "asr-dedup",
  "async-trait",
  "audio-gate",
@@ -3469,12 +3468,10 @@ dependencies = [
  "libc",
  "notify-rust",
  "prompt-echo",
- "regex",
  "reqwest",
  "serde",
  "serde_json",
  "smithay-client-toolkit",
- "strsim",
  "swayipc",
  "thiserror 2.0.18",
  "tiny-skia",
@@ -3486,7 +3483,7 @@ dependencies = [
  "wayland-client",
  "whisper-rs",
  "x11rb",
- "xkbcommon 0.8.0",
+ "xkb-type",
  "zbus",
 ]
 
