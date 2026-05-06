@@ -8,3 +8,5 @@ crates/*/Cargo.lock
 !/docs/troubleshooting.md
 !/docs/version-roadmap.md
 .worktrees/
+.deepseek/
+.claude/
