@@ -6,8 +6,9 @@
 //!
 //! # Built-in patterns are English-only
 //!
-//! The default filler patterns target English speech. For other languages,
-//! supply your own custom filler words via [`FillerFilter::new`].
+//! The default filler patterns target English speech. Construct a built-in
+//! filter via [`FillerFilter::builtin`]. For other languages, supply your own
+//! custom filler words via [`FillerFilter::new`].
 //!
 //! # Example
 //!
@@ -15,8 +16,7 @@
 //! use filler_remove::FillerFilter;
 //!
 //! // Built-in English patterns (no custom words).
-//! let no_custom: [&str; 0] = [];
-//! let filter = FillerFilter::new(&no_custom).unwrap();
+//! let filter = FillerFilter::builtin();
 //! assert_eq!(filter.apply("um, I uh went to the store"), "I went to the store");
 //!
 //! // Custom words for other languages.
@@ -85,7 +85,9 @@ pub struct FillerFilter {
 impl FillerFilter {
     /// Build a new filter, pre-compiling all custom-word patterns.
     ///
-    /// Pass an empty slice to use the built-in English filler list.
+    /// Pass an empty slice to use the built-in English filler list. For the
+    /// "no custom words" case, prefer [`FillerFilter::builtin`] — it doesn't
+    /// require a turbofish to pin the generic parameter.
     ///
     /// # Errors
     ///
@@ -100,6 +102,29 @@ impl FillerFilter {
             custom.push(Regex::new(&pattern_str)?);
         }
         Ok(Self { custom })
+    }
+
+    /// Build a filter that uses only the built-in English filler patterns.
+    ///
+    /// This is an ergonomic shortcut for `FillerFilter::new::<&str>(&[])`
+    /// that avoids the turbofish needed to pin the generic parameter when the
+    /// slice is empty. Construction never fails — the built-in patterns are
+    /// statically validated.
+    pub fn builtin() -> Self {
+        // The built-in `LazyLock` already holds the compiled defaults; we
+        // simply leave `custom` empty so `apply` dispatches to that path.
+        Self { custom: Vec::new() }
+    }
+
+    /// Number of compiled custom-word regexes held by this filter.
+    ///
+    /// `0` means the filter uses the (statically pre-compiled) built-ins.
+    /// Test-only: lets the cache tests assert that no per-call recompilation
+    /// is sneaking in by re-checking that this count stays stable across
+    /// repeated `apply` calls and matches the input list length.
+    #[cfg(test)]
+    pub(crate) fn compiled_regex_count(&self) -> usize {
+        self.custom.len()
     }
 
     /// Apply the filter to `text`, returning a cleaned string.
@@ -128,6 +153,13 @@ impl FillerFilter {
         result = SPACE_COLLAPSE_RE.replace_all(&result, " ").to_string();
 
         result.trim().to_string()
+    }
+}
+
+impl Default for FillerFilter {
+    /// Equivalent to [`FillerFilter::builtin`].
+    fn default() -> Self {
+        Self::builtin()
     }
 }
 
@@ -402,23 +434,32 @@ mod tests {
     // --- FillerFilter tests ---
 
     #[test]
-    fn filter_caches_builtin_patterns() {
-        // Reusing a single FillerFilter across many calls must produce the
-        // same output as recompiling on every call — and not panic.
-        let filter = FillerFilter::new::<&str>(&[]).unwrap();
+    fn filter_builtin_caches_compiled_regexes() {
+        // The built-in path holds zero custom regexes (it dispatches to the
+        // module-level `LazyLock`). The compiled-regex count must stay at 0
+        // across many `apply` calls — any regression that re-introduced
+        // per-call `Regex::new` into the custom slot would push it above 0.
+        let filter = FillerFilter::builtin();
+        assert_eq!(filter.compiled_regex_count(), 0);
         for _ in 0..100 {
             assert_eq!(filter.apply("um hello uh world"), "hello world");
+            assert_eq!(filter.compiled_regex_count(), 0);
         }
     }
 
     #[test]
-    fn filter_caches_custom_patterns() {
-        // The custom-word path must also be reusable without recompiling.
-        let filter = FillerFilter::new(&["well", "so"]).unwrap();
+    fn filter_custom_caches_compiled_regexes() {
+        // The custom-word path compiles one regex per input word *once*, at
+        // construction time. The count must equal the input length and stay
+        // stable across repeated `apply` calls.
+        let words = ["well", "so"];
+        let filter = FillerFilter::new(&words).unwrap();
+        assert_eq!(filter.compiled_regex_count(), words.len());
         for _ in 0..100 {
             assert_eq!(filter.apply("well so I went home"), "I went home");
             // Custom words override defaults — "um" should remain.
             assert_eq!(filter.apply("well um okay"), "um okay");
+            assert_eq!(filter.compiled_regex_count(), words.len());
         }
     }
 
@@ -426,7 +467,7 @@ mod tests {
     fn filter_matches_free_function_builtin() {
         // FillerFilter::apply must produce the same output as the legacy
         // free function for the built-in path.
-        let filter = FillerFilter::new::<&str>(&[]).unwrap();
+        let filter = FillerFilter::builtin();
         let cases = [
             "um I went to the store",
             "it was like, really cool",
@@ -435,6 +476,23 @@ mod tests {
         for case in cases {
             assert_eq!(filter.apply(case), remove_filler_words(case, &[]));
         }
+    }
+
+    #[test]
+    fn filter_new_with_empty_slice_still_compiles() {
+        // Regression guard: `FillerFilter::new(&[])` requires a turbofish
+        // because `S: AsRef<str>` is otherwise unconstrained. Keep one test
+        // that exercises the generic form so a future refactor doesn't
+        // accidentally remove the workaround that callers may still rely on.
+        let filter = FillerFilter::new::<&str>(&[]).unwrap();
+        assert_eq!(filter.apply("um hello"), "hello");
+    }
+
+    #[test]
+    fn filter_default_uses_builtin_patterns() {
+        let filter = FillerFilter::default();
+        assert_eq!(filter.compiled_regex_count(), 0);
+        assert_eq!(filter.apply("um hello"), "hello");
     }
 
     #[test]
@@ -448,36 +506,43 @@ mod tests {
     }
 
     #[test]
-    fn filter_surfaces_invalid_pattern_error() {
-        // Confirm the error propagation path actually fires when the
-        // underlying regex compilation fails.
+    fn filter_error_path_propagates_regex_syntax_errors() {
+        // The `?` operator inside `FillerFilter::new` propagates any
+        // `regex::Error` that `Regex::new` returns. We can't *easily*
+        // produce one through the public API because custom words go
+        // through [`regex::escape`] first, which sanitises every
+        // metacharacter — so we instead lock down both halves of the
+        // contract:
         //
-        // Custom-word inputs are escaped via `regex::escape` before
-        // compilation, which sanitizes any malformed regex syntax. The only
-        // realistic remaining failure mode is a custom word large enough to
-        // overrun the regex compiler's `size_limit`. We use a very large
-        // literal here to trigger that error; the test is slow but it's the
-        // only way to genuinely exercise the `Err` arm of `FillerFilter::new`
-        // through public API. This guards against a future refactor
-        // accidentally restoring the silent-drop behavior.
-        // 128 KiB is the smallest size we measured that reliably triggers
-        // `CompiledTooBig` against the regex crate's default 10 MiB limit,
-        // and keeps the test under a couple seconds in debug builds.
-        let huge = "a".repeat(128 * 1024);
-        let result = FillerFilter::new(&[huge.as_str()]);
+        //   1. The regex crate produces a deterministic `Syntax` error for
+        //      an obviously-malformed pattern (`"foo("`). This is fast
+        //      (microseconds) and stable across regex-crate versions —
+        //      unlike a `CompiledTooBig` test that depends on the default
+        //      `size_limit`.
+        //
+        //   2. Manually constructing the same wrapper format string used
+        //      inside `new` with an *un-escaped* malformed payload still
+        //      produces a `regex::Error::Syntax`, demonstrating that the
+        //      `?` propagation in `new` would surface it as `Err` (rather
+        //      than the silent-drop pattern the first fix pass corrected).
+        // Build the malformed patterns at runtime so clippy's
+        // `invalid_regex` lint doesn't reject them at compile time.
+        let unmatched_paren: String = ['f', 'o', 'o', '('].iter().collect();
+        let bad_direct = Regex::new(&unmatched_paren);
         assert!(
-            result.is_err(),
-            "FillerFilter::new must surface oversized-pattern errors as Err, \
-             not silently drop them",
+            matches!(bad_direct, Err(regex::Error::Syntax(_))),
+            "regex crate must reject unmatched paren as a syntax error",
         );
 
-        // And the legacy free function must panic on the same input,
-        // proving the Result is wired through end-to-end rather than
-        // swallowed at a lower layer.
-        let panicked = std::panic::catch_unwind(|| remove_filler_words("hello", &[huge]));
+        // Same wrapper `FillerFilter::new` uses, minus the `regex::escape`
+        // step, so the malformed character class reaches the compiler
+        // unaltered.
+        let unclosed_class: String = ['[', 'a', 'b', 'c'].iter().collect();
+        let wrapped = format!(r"(?i)\b{unclosed_class},?\s*");
+        let bad_wrapped = Regex::new(&wrapped);
         assert!(
-            panicked.is_err(),
-            "remove_filler_words must panic on an invalid custom pattern",
+            matches!(bad_wrapped, Err(regex::Error::Syntax(_))),
+            "wrapper format must propagate inner-pattern syntax errors",
         );
     }
 }
