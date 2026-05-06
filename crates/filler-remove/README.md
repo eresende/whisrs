@@ -38,6 +38,22 @@ let cleaned = remove_filler_words("I I I went to the store", &[]);
 assert_eq!(cleaned, "I went to the store");
 ```
 
+### Reusing a filter on hot paths
+
+`remove_filler_words` recompiles its regexes on every call. For per-chunk or
+per-recording filtering, build a `FillerFilter` once and reuse it. The
+constructor returns `Result<_, regex::Error>` so misconfigured custom words
+surface as real errors instead of being silently dropped:
+
+```rust
+use filler_remove::FillerFilter;
+
+let filter = FillerFilter::new(&["ну", "типа"]).unwrap();
+for chunk in ["ну я пошёл", "типа домой"] {
+    println!("{}", filter.apply(chunk));
+}
+```
+
 ## Installation
 
 ```sh

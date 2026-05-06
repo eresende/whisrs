@@ -2,9 +2,11 @@
 name = "filler-remove"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.80"
 description = "Regex-based filler word and stutter removal from transcribed speech"
 repository = "https://github.com/y0sif/whisrs/tree/main/crates/filler-remove"
 license = "MIT"
+readme = "README.md"
 keywords = ["speech", "filler", "stutter", "transcription", "text-processing"]
 categories = ["text-processing"]
 

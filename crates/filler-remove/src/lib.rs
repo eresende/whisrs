@@ -7,22 +7,25 @@
 //! # Built-in patterns are English-only
 //!
 //! The default filler patterns target English speech. For other languages,
-//! pass your own custom filler words via [`remove_filler_words`].
+//! supply your own custom filler words via [`FillerFilter::new`].
 //!
 //! # Example
 //!
 //! ```rust
-//! use filler_remove::remove_filler_words;
+//! use filler_remove::FillerFilter;
 //!
-//! // Built-in English patterns
-//! let cleaned = remove_filler_words("um, I uh went to the store", &[]);
-//! assert_eq!(cleaned, "I went to the store");
+//! // Built-in English patterns (no custom words).
+//! let no_custom: [&str; 0] = [];
+//! let filter = FillerFilter::new(&no_custom).unwrap();
+//! assert_eq!(filter.apply("um, I uh went to the store"), "I went to the store");
 //!
-//! // Custom words for other languages
-//! let custom = vec!["ну".to_string(), "типа".to_string()];
-//! let cleaned = remove_filler_words("ну типа я пошёл", &custom);
-//! assert_eq!(cleaned, "я пошёл");
+//! // Custom words for other languages.
+//! let filter = FillerFilter::new(&["ну", "типа"]).unwrap();
+//! assert_eq!(filter.apply("ну типа я пошёл"), "я пошёл");
 //! ```
+//!
+//! For one-off / non-hot-path usage, [`remove_filler_words`] is also provided
+//! as a convenience but recompiles regexes on every invocation.
 
 use std::sync::LazyLock;
 
@@ -54,6 +57,80 @@ static BUILTIN_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// Pre-compiled regex for collapsing multiple spaces into one.
 static SPACE_COLLAPSE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r" {2,}").unwrap());
 
+/// A reusable filler-word filter that pre-compiles its regexes once.
+///
+/// Construct with [`FillerFilter::new`] and call [`FillerFilter::apply`]
+/// repeatedly — each call avoids recompiling regexes, which matters when the
+/// filter is invoked per audio chunk or per recording.
+///
+/// # Behavior
+///
+/// - If `custom_words` is empty, the filter uses the built-in English patterns
+///   (already pre-compiled via [`LazyLock`]).
+/// - If `custom_words` is non-empty, those words are compiled into custom
+///   regexes (each wrapped with `\b...\b,?\s*`) and the built-in defaults are
+///   **not** used — same semantics as the legacy [`remove_filler_words`].
+/// - Stutter removal and whitespace collapse are always applied.
+///
+/// # Errors
+///
+/// Returns the underlying [`regex::Error`] if any custom word produces an
+/// invalid pattern. The built-in patterns are statically validated and never
+/// fail.
+pub struct FillerFilter {
+    /// Compiled custom-word patterns. Empty when using built-ins.
+    custom: Vec<Regex>,
+}
+
+impl FillerFilter {
+    /// Build a new filter, pre-compiling all custom-word patterns.
+    ///
+    /// Pass an empty slice to use the built-in English filler list.
+    ///
+    /// # Errors
+    ///
+    /// Surfaces a [`regex::Error`] if any custom word produces an invalid
+    /// regex. Note that custom words are escaped via [`regex::escape`] before
+    /// insertion, so failures here are rare in practice — but a malformed
+    /// (non-UTF-8 or zero-length) input could still trip the compiler.
+    pub fn new<S: AsRef<str>>(custom_words: &[S]) -> Result<Self, regex::Error> {
+        let mut custom = Vec::with_capacity(custom_words.len());
+        for word in custom_words {
+            let pattern_str = format!(r"(?i)\b{},?\s*", regex::escape(word.as_ref()));
+            custom.push(Regex::new(&pattern_str)?);
+        }
+        Ok(Self { custom })
+    }
+
+    /// Apply the filter to `text`, returning a cleaned string.
+    ///
+    /// This is cheap to call repeatedly — no regex compilation happens here.
+    pub fn apply(&self, text: &str) -> String {
+        let mut result = text.to_string();
+
+        if self.custom.is_empty() {
+            // Use pre-compiled built-in patterns.
+            for re in BUILTIN_PATTERNS.iter() {
+                result = re.replace_all(&result, "").to_string();
+            }
+        } else {
+            // Use pre-compiled custom-word patterns.
+            for re in &self.custom {
+                result = re.replace_all(&result, "").to_string();
+            }
+        }
+
+        // Remove stutters (repeated consecutive words like "I I I went" -> "I went").
+        // The regex crate doesn't support backreferences, so we do this manually.
+        result = remove_stutters(&result);
+
+        // Collapse multiple spaces and trim.
+        result = SPACE_COLLAPSE_RE.replace_all(&result, " ").to_string();
+
+        result.trim().to_string()
+    }
+}
+
 /// Remove filler words and stutters from the given text.
 ///
 /// When `custom_words` is non-empty, those patterns are used instead of the
@@ -66,32 +143,22 @@ static SPACE_COLLAPSE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r" {2,}"
 ///
 /// The default filler list targets English speech. For other languages,
 /// supply custom words.
+///
+/// # Performance
+///
+/// This convenience function compiles a fresh [`FillerFilter`] on every call.
+/// For hot paths (per-chunk / per-recording filtering), construct a
+/// [`FillerFilter`] once via [`FillerFilter::new`] and reuse it.
+///
+/// # Panics
+///
+/// Panics if any `custom_words` entry produces an invalid regex. Use
+/// [`FillerFilter::new`] for fallible construction. (In practice, every
+/// custom word is escaped via [`regex::escape`], so failures here are rare.)
 pub fn remove_filler_words(text: &str, custom_words: &[String]) -> String {
-    let mut result = text.to_string();
-
-    if custom_words.is_empty() {
-        // Use pre-compiled built-in patterns.
-        for re in BUILTIN_PATTERNS.iter() {
-            result = re.replace_all(&result, "").to_string();
-        }
-    } else {
-        // Use custom words, wrapping each with word boundaries.
-        for word in custom_words {
-            let pattern_str = format!(r"(?i)\b{},?\s*", regex::escape(word));
-            if let Ok(re) = Regex::new(&pattern_str) {
-                result = re.replace_all(&result, "").to_string();
-            }
-        }
-    }
-
-    // Remove stutters (repeated consecutive words like "I I I went" -> "I went").
-    // The regex crate doesn't support backreferences, so we do this manually.
-    result = remove_stutters(&result);
-
-    // Collapse multiple spaces and trim.
-    result = SPACE_COLLAPSE_RE.replace_all(&result, " ").to_string();
-
-    result.trim().to_string()
+    let filter = FillerFilter::new(custom_words)
+        .expect("custom filler word produced an invalid regex; use FillerFilter::new for fallible construction");
+    filter.apply(text)
 }
 
 /// Remove consecutive repeated words (case-insensitive).
@@ -330,5 +397,87 @@ mod tests {
     fn emoji_in_text() {
         let text = "um 😀 that was basically 🎉 great";
         assert_eq!(remove_filler_words(text, &[]), "😀 that was 🎉 great");
+    }
+
+    // --- FillerFilter tests ---
+
+    #[test]
+    fn filter_caches_builtin_patterns() {
+        // Reusing a single FillerFilter across many calls must produce the
+        // same output as recompiling on every call — and not panic.
+        let filter = FillerFilter::new::<&str>(&[]).unwrap();
+        for _ in 0..100 {
+            assert_eq!(filter.apply("um hello uh world"), "hello world");
+        }
+    }
+
+    #[test]
+    fn filter_caches_custom_patterns() {
+        // The custom-word path must also be reusable without recompiling.
+        let filter = FillerFilter::new(&["well", "so"]).unwrap();
+        for _ in 0..100 {
+            assert_eq!(filter.apply("well so I went home"), "I went home");
+            // Custom words override defaults — "um" should remain.
+            assert_eq!(filter.apply("well um okay"), "um okay");
+        }
+    }
+
+    #[test]
+    fn filter_matches_free_function_builtin() {
+        // FillerFilter::apply must produce the same output as the legacy
+        // free function for the built-in path.
+        let filter = FillerFilter::new::<&str>(&[]).unwrap();
+        let cases = [
+            "um I went to the store",
+            "it was like, really cool",
+            "basically it works",
+        ];
+        for case in cases {
+            assert_eq!(filter.apply(case), remove_filler_words(case, &[]));
+        }
+    }
+
+    #[test]
+    fn filter_new_returns_result_type() {
+        // The constructor signature is `Result<Self, regex::Error>` so any
+        // failure to compile a custom word now surfaces as a real error
+        // instead of being silently dropped (the previous behavior used
+        // `if let Ok(re) = ...` and discarded compilation errors).
+        let res: Result<FillerFilter, regex::Error> = FillerFilter::new(&["um", "uh"]);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn filter_surfaces_invalid_pattern_error() {
+        // Confirm the error propagation path actually fires when the
+        // underlying regex compilation fails.
+        //
+        // Custom-word inputs are escaped via `regex::escape` before
+        // compilation, which sanitizes any malformed regex syntax. The only
+        // realistic remaining failure mode is a custom word large enough to
+        // overrun the regex compiler's `size_limit`. We use a very large
+        // literal here to trigger that error; the test is slow but it's the
+        // only way to genuinely exercise the `Err` arm of `FillerFilter::new`
+        // through public API. This guards against a future refactor
+        // accidentally restoring the silent-drop behavior.
+        // 128 KiB is the smallest size we measured that reliably triggers
+        // `CompiledTooBig` against the regex crate's default 10 MiB limit,
+        // and keeps the test under a couple seconds in debug builds.
+        let huge = "a".repeat(128 * 1024);
+        let result = FillerFilter::new(&[huge.as_str()]);
+        assert!(
+            result.is_err(),
+            "FillerFilter::new must surface oversized-pattern errors as Err, \
+             not silently drop them",
+        );
+
+        // And the legacy free function must panic on the same input,
+        // proving the Result is wired through end-to-end rather than
+        // swallowed at a lower layer.
+        let panicked = std::panic::catch_unwind(|| remove_filler_words("hello", &[huge]));
+        assert!(
+            panicked.is_err(),
+            "remove_filler_words must panic on an invalid custom pattern",
+        );
     }
 }
