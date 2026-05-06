@@ -2,9 +2,11 @@
 name = "prompt-echo"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.74"
 description = "Detect Whisper prompt-regurgitation hallucination on silent audio"
 repository = "https://github.com/y0sif/whisrs/tree/main/crates/prompt-echo"
 license = "MIT"
+readme = "README.md"
 keywords = ["whisper", "asr", "hallucination", "prompt", "speech-to-text"]
 categories = ["text-processing"]
 
