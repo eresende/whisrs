@@ -21,8 +21,8 @@ macro_rules! warn {
     ($($arg:tt)*) => {};
 }
 
-use crate::keymap::XkbKeymap;
-use crate::{ClipboardBackend, KeyTap};
+use crate::keymap::{KeyboardLayout, XkbKeymap};
+use crate::{default_clipboard, ClipboardBackend, KeyTap};
 
 /// Delay after creating the virtual device to let the kernel register it.
 const DEVICE_SETTLE_DELAY: Duration = Duration::from_millis(200);
@@ -36,14 +36,60 @@ pub struct Keyboard {
 }
 
 impl Keyboard {
-    /// Create a new virtual keyboard device.
+    /// Create a new virtual keyboard with auto-detected layout and clipboard.
+    ///
+    /// This is the most ergonomic constructor: it picks up the active
+    /// XKB layout from the compositor (Hyprland / Sway / env vars), picks
+    /// the right clipboard backend for the current display server, and
+    /// builds the uinput device.
+    ///
+    /// `key_delay` is the inter-event delay. Raise it for TUIs that drop
+    /// characters in raw mode (e.g. Node/Ink-based apps like Claude Code).
+    ///
+    /// Requires write access to `/dev/uinput`.
+    ///
+    /// For full control over keymap/clipboard, see
+    /// [`Keyboard::with_components`]; to force a specific XKB layout, see
+    /// [`Keyboard::with_layout`].
+    pub fn new(key_delay: Duration) -> anyhow::Result<Self> {
+        let layout = KeyboardLayout::detect();
+        let keymap = XkbKeymap::from_layout(&layout)?;
+        Self::with_components(keymap, default_clipboard(), key_delay)
+    }
+
+    /// Create a virtual keyboard for a specific XKB layout (and optional
+    /// variant), with the auto-detected clipboard backend.
+    ///
+    /// Useful when the application already knows the user's layout and
+    /// wants to skip the compositor probe (e.g. it's stored in a config
+    /// file).
+    pub fn with_layout(
+        layout: &str,
+        variant: Option<&str>,
+        key_delay: Duration,
+    ) -> anyhow::Result<Self> {
+        let detected = KeyboardLayout {
+            layout: layout.to_string(),
+            variant: variant.unwrap_or("").to_string(),
+        };
+        let keymap = XkbKeymap::from_layout(&detected)?;
+        Self::with_components(keymap, default_clipboard(), key_delay)
+    }
+
+    /// Create a virtual keyboard from explicit components (keymap +
+    /// clipboard backend).
+    ///
+    /// Use this when you need to inject a custom [`XkbKeymap`] (e.g. for
+    /// tests) or a non-default clipboard backend
+    /// ([`crate::NoopClipboard`] / [`crate::WaylandClipboard`] /
+    /// [`crate::X11Clipboard`]).
     ///
     /// Requires write access to `/dev/uinput` (user must be in the `input`
     /// group or have the appropriate udev rule installed).
     ///
     /// `key_delay` is the inter-event delay. Raise it for TUIs that drop
     /// characters in raw mode (e.g. Node/Ink-based apps like Claude Code).
-    pub fn new(
+    pub fn with_components(
         keymap: XkbKeymap,
         clipboard: Box<dyn ClipboardBackend>,
         key_delay: Duration,

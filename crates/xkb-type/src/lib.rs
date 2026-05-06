@@ -5,22 +5,33 @@
 //! - [`XkbKeymap`] — reverse char→keycode lookup from the active XKB layout.
 //! - [`ClipboardBackend`] — trait + auto-detected clipboard implementations.
 //!
-//! # Example
+//! # Example (auto-detect layout and clipboard)
 //!
 //! ```no_run
-//! use xkb_type::{Keyboard, XkbKeymap, KeyboardLayout, default_clipboard};
+//! use xkb_type::{Keyboard, Key};
 //! use std::time::Duration;
 //!
-//! let layout = KeyboardLayout::detect();
-//! let keymap = XkbKeymap::from_layout(&layout).unwrap();
-//! let keyboard = Keyboard::new(keymap, default_clipboard(), Duration::from_millis(5)).unwrap();
+//! let mut kb = Keyboard::new(Duration::from_millis(2))?;
+//! kb.type_text("Hello — こんにちは — €100 — 😀")?;
+//! kb.backspace(5)?;
+//! kb.send_combo(&[Key::KEY_LEFTCTRL, Key::KEY_C])?;
+//! # Ok::<(), anyhow::Error>(())
+//! ```
+//!
+//! # Example (explicit layout)
+//!
+//! ```no_run
+//! use xkb_type::Keyboard;
+//! use std::time::Duration;
+//!
+//! let mut kb = Keyboard::with_layout("de", None, Duration::from_millis(5))?;
+//! kb.type_text("Schöne Grüße")?;
+//! # Ok::<(), anyhow::Error>(())
 //! ```
 
 pub mod clipboard;
 pub mod keyboard;
 pub mod keymap;
-
-use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -71,13 +82,18 @@ pub use clipboard::{default_clipboard, NoopClipboard, WaylandClipboard, X11Clipb
 pub use keyboard::Keyboard;
 pub use keymap::{KeyboardLayout, XkbKeymap};
 
+// Re-export evdev's `Key` enum (and the full `evdev` module) so callers
+// of [`Keyboard::send_combo`] don't need a direct `evdev` dependency.
+pub use evdev;
+pub use evdev::Key;
+
 /// Convenience: build a [`Keyboard`] from the detected layout with a
 /// sensible default key delay (5 ms).
 ///
 /// Returns an error if the XKB keymap cannot be built (missing locale data)
 /// or if `/dev/uinput` is not writable.
+///
+/// Equivalent to `Keyboard::new(Duration::from_millis(5))`.
 pub fn keyboard_from_detected_layout() -> anyhow::Result<Keyboard> {
-    let layout = KeyboardLayout::detect();
-    let keymap = XkbKeymap::from_layout(&layout)?;
-    Keyboard::new(keymap, default_clipboard(), Duration::from_millis(5))
+    Keyboard::new(std::time::Duration::from_millis(5))
 }

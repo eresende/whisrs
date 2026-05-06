@@ -2,6 +2,7 @@
 name = "xkb-type"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.74"
 description = "Virtual keyboard typing via evdev/uinput with XKB layout-aware key mapping"
 license = "MIT"
 repository = "https://github.com/y0sif/whisrs"

@@ -59,6 +59,20 @@ impl KeyboardLayout {
         Some(Self { layout, variant })
     }
 
+    /// Query Sway for the active keyboard layout via `swaymsg -t get_inputs`.
+    ///
+    /// Sway's `xkb_layout_names` array exposes *display* names like
+    /// `"German"` or `"English (US)"`, not the XKB layout codes (`"de"`,
+    /// `"us"`) that `xkbcommon` understands. Feeding a display name into
+    /// `Keymap::new_from_names` causes xkbcommon to silently fall back to
+    /// the compile-time default layout — which in turn would
+    /// short-circuit the env-var / `/etc/default/keyboard` fallbacks that
+    /// can produce the *correct* code.
+    ///
+    /// We therefore confirm Sway is reachable (so the function is not
+    /// dead code) but always return `None`, letting the caller fall
+    /// through to `from_env`. If a real display-name → XKB-code lookup
+    /// table is added later, this is the place to wire it up.
     fn from_sway() -> Option<Self> {
         let output = Command::new("swaymsg")
             .args(["-t", "get_inputs", "--raw"])
@@ -67,26 +81,28 @@ impl KeyboardLayout {
         if !output.status.success() {
             return None;
         }
+
         let inputs: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).ok()?;
+
+        // Confirm there is at least one keyboard input with an active
+        // layout — guards against running this on an X11 session where
+        // swaymsg may exist but not return useful data.
         let kb = inputs.iter().find(|i| {
             i.get("type").and_then(|t| t.as_str()) == Some("keyboard")
                 && i.get("xkb_active_layout_name").is_some()
         })?;
-        let active_name = kb.get("xkb_active_layout_name")?.as_str()?.to_string();
+
+        // Confirm the layout-name array is well-formed; we don't use
+        // the value because it's a display name, not an XKB code.
         let layout_names = kb.get("xkb_layout_names")?.as_array()?;
         let active_idx = kb
             .get("xkb_active_layout_index")
             .and_then(|i| i.as_u64())
             .unwrap_or(0) as usize;
-        let layout = layout_names
-            .get(active_idx)
-            .and_then(|n| n.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or(active_name);
-        Some(Self {
-            layout,
-            variant: String::new(),
-        })
+        let _display_name = layout_names.get(active_idx)?.as_str()?;
+
+        // Intentionally fall through — see the doc comment above.
+        None
     }
 
     fn from_env() -> Option<Self> {
@@ -298,6 +314,13 @@ pub(crate) fn build_reverse_map(keymap: &xkbcommon::xkb::Keymap) -> HashMap<char
 mod tests {
     use super::*;
 
+    fn us_layout() -> KeyboardLayout {
+        KeyboardLayout {
+            layout: "us".to_string(),
+            variant: String::new(),
+        }
+    }
+
     fn layout(name: &str, variant: &str) -> KeyboardLayout {
         KeyboardLayout {
             layout: name.to_string(),
@@ -328,166 +351,370 @@ mod tests {
             .unwrap_or_else(|| panic!("'{ch}' should be in {label} keymap"));
         assert_eq!(
             mapping.main.keycode, expected_keycode,
-            "'{ch}' keycode mismatch on {label}"
+            "'{ch}' should be at evdev {expected_keycode} on {label}, got {}",
+            mapping.main.keycode
         );
         assert_eq!(
             mapping.main.shift, expected_shift,
-            "'{ch}' shift mismatch on {label}"
+            "'{ch}' shift should be {expected_shift} on {label}"
         );
         assert_eq!(
             mapping.main.altgr, expected_altgr,
-            "'{ch}' altgr mismatch on {label}"
+            "'{ch}' altgr should be {expected_altgr} on {label}"
         );
     }
 
     #[test]
-    fn german() {
+    fn build_us_keymap() {
+        let km = XkbKeymap::from_layout(&us_layout());
+        if let Ok(km) = km {
+            assert!(!km.is_empty(), "keymap should not be empty");
+            assert!(km.lookup('a').is_some(), "'a' should be in the keymap");
+        }
+    }
+
+    #[test]
+    fn shift_mapping_for_uppercase() {
+        let km = XkbKeymap::from_layout(&us_layout());
+        if let Ok(km) = km {
+            if let Some(mapping) = km.lookup('A') {
+                assert!(
+                    mapping.main.shift,
+                    "uppercase 'A' should require shift on standard layouts"
+                );
+            }
+        }
+    }
+
+    // --- QWERTZ family (y/z swapped) ---
+
+    #[test]
+    fn german_layout() {
         let km = XkbKeymap::from_layout(&layout("de", "")).unwrap();
-        assert_key(&km, 'z', 21, false, "de");
-        assert_key(&km, 'y', 44, false, "de");
+        assert_key(&km, 'z', 21, false, "German");
+        assert_key(&km, 'y', 44, false, "German");
     }
+
     #[test]
-    fn swiss() {
+    fn swiss_layout() {
         let km = XkbKeymap::from_layout(&layout("ch", "")).unwrap();
-        assert_key(&km, 'z', 21, false, "ch");
-        assert_key(&km, 'y', 44, false, "ch");
+        assert_key(&km, 'z', 21, false, "Swiss");
+        assert_key(&km, 'y', 44, false, "Swiss");
     }
+
     #[test]
-    fn czech() {
+    fn czech_layout() {
         let km = XkbKeymap::from_layout(&layout("cz", "")).unwrap();
-        assert_key(&km, 'z', 21, false, "cz");
-        assert_key(&km, 'y', 44, false, "cz");
+        assert_key(&km, 'z', 21, false, "Czech");
+        assert_key(&km, 'y', 44, false, "Czech");
+        assert_key(&km, 'ů', 39, false, "Czech");
     }
+
     #[test]
-    fn slovak() {
+    fn slovak_layout() {
         let km = XkbKeymap::from_layout(&layout("sk", "")).unwrap();
-        assert_key(&km, 'z', 21, false, "sk");
-        assert_key(&km, 'y', 44, false, "sk");
+        assert_key(&km, 'z', 21, false, "Slovak");
+        assert_key(&km, 'y', 44, false, "Slovak");
+        assert_key(&km, 'ô', 39, false, "Slovak");
     }
+
     #[test]
-    fn hungarian() {
+    fn hungarian_layout() {
         let km = XkbKeymap::from_layout(&layout("hu", "")).unwrap();
-        assert_key(&km, 'z', 21, false, "hu");
-        assert_key(&km, 'y', 44, false, "hu");
+        assert_key(&km, 'z', 21, false, "Hungarian");
+        assert_key(&km, 'y', 44, false, "Hungarian");
+        assert_key(&km, 'ö', 11, false, "Hungarian");
+        assert_key(&km, 'ü', 12, false, "Hungarian");
     }
+
+    // --- AZERTY family (a/q and z/w swapped) ---
+
     #[test]
-    fn french() {
+    fn french_layout() {
         let km = XkbKeymap::from_layout(&layout("fr", "")).unwrap();
-        assert_key(&km, 'a', 16, false, "fr");
-        assert_key(&km, 'q', 30, false, "fr");
-        assert_key(&km, 'z', 17, false, "fr");
-        assert_key(&km, 'w', 44, false, "fr");
+        assert_key(&km, 'a', 16, false, "French");
+        assert_key(&km, 'q', 30, false, "French");
+        assert_key(&km, 'z', 17, false, "French");
+        assert_key(&km, 'w', 44, false, "French");
     }
+
     #[test]
-    fn belgian() {
+    fn belgian_layout() {
         let km = XkbKeymap::from_layout(&layout("be", "")).unwrap();
-        assert_key(&km, 'a', 16, false, "be");
-        assert_key(&km, 'q', 30, false, "be");
+        assert_key(&km, 'a', 16, false, "Belgian");
+        assert_key(&km, 'q', 30, false, "Belgian");
+        assert_key(&km, 'z', 17, false, "Belgian");
+        assert_key(&km, 'w', 44, false, "Belgian");
+        assert_key(&km, 'm', 39, false, "Belgian");
     }
+
+    // --- QWERTY-based with special characters ---
+
     #[test]
-    fn spanish() {
+    fn spanish_layout() {
         let km = XkbKeymap::from_layout(&layout("es", "")).unwrap();
-        assert_key(&km, 'ñ', 39, false, "es");
+        assert_key(&km, 'ñ', 39, false, "Spanish");
     }
+
     #[test]
-    fn portuguese() {
+    fn portuguese_layout() {
         let km = XkbKeymap::from_layout(&layout("pt", "")).unwrap();
-        assert_key(&km, 'a', 30, false, "pt");
+        assert_key(&km, 'a', 30, false, "Portuguese");
+        assert_key(&km, 'z', 44, false, "Portuguese");
+        assert_key(&km, 'q', 16, false, "Portuguese");
     }
+
     #[test]
-    fn italian() {
+    fn italian_layout() {
         let km = XkbKeymap::from_layout(&layout("it", "")).unwrap();
-        assert_key(&km, 'a', 30, false, "it");
+        assert_key(&km, 'a', 30, false, "Italian");
+        assert_key(&km, 'z', 44, false, "Italian");
+        assert_key(&km, 'q', 16, false, "Italian");
+        assert_key(&km, 'w', 17, false, "Italian");
     }
+
     #[test]
-    fn uk() {
+    fn uk_layout() {
         let km = XkbKeymap::from_layout(&layout("gb", "")).unwrap();
-        assert_key(&km, '#', 43, false, "gb");
+        assert_key(&km, 'a', 30, false, "UK");
+        assert_key(&km, 'z', 44, false, "UK");
+        // UK has '#' without shift (evdev 43), unlike US where it's Shift+3.
+        assert_key(&km, '#', 43, false, "UK");
+        assert_key(&km, '£', 4, true, "UK");
     }
+
+    // --- Nordic layouts ---
+
     #[test]
-    fn swedish() {
+    fn swedish_layout() {
         let km = XkbKeymap::from_layout(&layout("se", "")).unwrap();
-        assert_key(&km, 'ö', 39, false, "se");
-        assert_key(&km, 'ä', 40, false, "se");
+        assert_key(&km, 'ö', 39, false, "Swedish");
+        assert_key(&km, 'ä', 40, false, "Swedish");
     }
+
     #[test]
-    fn norwegian() {
+    fn norwegian_layout() {
         let km = XkbKeymap::from_layout(&layout("no", "")).unwrap();
-        assert_key(&km, 'ø', 39, false, "no");
-        assert_key(&km, 'æ', 40, false, "no");
+        assert_key(&km, 'ø', 39, false, "Norwegian");
+        assert_key(&km, 'æ', 40, false, "Norwegian");
     }
+
     #[test]
-    fn danish() {
+    fn danish_layout() {
         let km = XkbKeymap::from_layout(&layout("dk", "")).unwrap();
-        assert_key(&km, 'ø', 40, false, "dk");
-        assert_key(&km, 'æ', 39, false, "dk");
+        assert_key(&km, 'ø', 40, false, "Danish");
+        assert_key(&km, 'æ', 39, false, "Danish");
     }
+
     #[test]
-    fn finnish() {
+    fn finnish_layout() {
         let km = XkbKeymap::from_layout(&layout("fi", "")).unwrap();
-        assert_key(&km, 'ö', 39, false, "fi");
-        assert_key(&km, 'ä', 40, false, "fi");
+        assert_key(&km, 'ö', 39, false, "Finnish");
+        assert_key(&km, 'ä', 40, false, "Finnish");
     }
+
+    // --- Eastern European ---
+
     #[test]
-    fn polish() {
+    fn polish_layout() {
         let km = XkbKeymap::from_layout(&layout("pl", "")).unwrap();
-        assert_key(&km, 'a', 30, false, "pl");
-        assert_key_full(&km, 'ą', 30, false, true, "pl");
-    }
-    #[test]
-    fn russian() {
-        let km = XkbKeymap::from_layout(&layout("ru", "")).unwrap();
-        assert_key(&km, 'ф', 30, false, "ru");
-        assert_key(&km, 'я', 44, false, "ru");
-    }
-    #[test]
-    fn ukrainian() {
-        let km = XkbKeymap::from_layout(&layout("ua", "")).unwrap();
-        assert_key(&km, 'ф', 30, false, "ua");
-    }
-    #[test]
-    fn greek() {
-        let km = XkbKeymap::from_layout(&layout("gr", "")).unwrap();
-        assert_key(&km, 'α', 30, false, "gr");
-    }
-    #[test]
-    fn japanese() {
-        let km = XkbKeymap::from_layout(&layout("jp", "")).unwrap();
-        assert_key(&km, 'a', 30, false, "jp");
-    }
-    #[test]
-    fn dvorak() {
-        let km = XkbKeymap::from_layout(&layout("us", "dvorak")).unwrap();
-        assert_key(&km, 'o', 31, false, "dvorak");
-    }
-    #[test]
-    fn colemak() {
-        let km = XkbKeymap::from_layout(&layout("us", "colemak")).unwrap();
-        assert_key(&km, 's', 32, false, "colemak");
+        assert_key(&km, 'a', 30, false, "Polish");
+        assert_key(&km, 'z', 44, false, "Polish");
+        // Polish accented characters live at level 2 (AltGr) and now go
+        // through uinput directly, no clipboard fallback needed.
+        assert_key_full(&km, 'ą', 30, false, true, "Polish");
+        assert_key_full(&km, 'ę', 18, false, true, "Polish");
     }
 
     #[test]
     fn us_intl_typeable_via_uinput() {
-        let km = XkbKeymap::from_layout(&layout("us", "intl")).unwrap();
+        let km = XkbKeymap::from_layout(&KeyboardLayout {
+            layout: "us".to_string(),
+            variant: "intl".to_string(),
+        })
+        .unwrap();
+        // Every character that previously had to fall back to clipboard
+        // paste (and was therefore broken in terminals like Alacritty)
+        // must now have a direct uinput route — either as a level 2/3
+        // AltGr key, or via the dead-key + Space fallback table.
         for ch in [
             '\'', '"', '~', '`', '^', 'ç', 'á', 'é', 'í', 'ó', 'ú', 'ã', 'ñ',
         ] {
             assert!(
                 km.lookup(ch).is_some(),
-                "'{ch}' must be reachable on us:intl"
+                "'{ch}' must be reachable via uinput on us:intl, got no mapping"
             );
         }
     }
 
+    // --- Synthesis routing (locks in direct vs dead-key+follow paths) ---
+
+    /// Pass 1 (literal accent via `dead_X + Space`): for each of the
+    /// chars Pass 1 covers, on us:intl the char must be reachable, and
+    /// — if it ended up routed through synthesis rather than a direct
+    /// level mapping — the follow tap must be unmodified Space.
+    /// Whether any specific char is direct vs synthesized is layout-
+    /// dependent (us:intl puts some literal accents at level 2 directly),
+    /// but the invariant holds: synthesized routes always end with Space.
     #[test]
-    fn build_us_keymap() {
+    fn us_intl_pass1_chars_synthesized_routes_end_with_space() {
         let km = XkbKeymap::from_layout(&KeyboardLayout {
-            layout: "us".into(),
-            variant: String::new(),
-        });
-        if let Ok(km) = km {
-            assert!(!km.is_empty());
-            assert!(km.lookup('a').is_some());
+            layout: "us".to_string(),
+            variant: "intl".to_string(),
+        })
+        .unwrap();
+        for ch in ['\'', '"', '~', '`', '^'] {
+            let mapping = km
+                .lookup(ch)
+                .unwrap_or_else(|| panic!("'{ch}' must be reachable on us:intl"));
+            if let Some(follow) = mapping.follow {
+                assert_eq!(
+                    follow.keycode,
+                    evdev::Key::KEY_SPACE.code(),
+                    "'{ch}' was synthesized; follow tap must be SPACE \
+                     (dead_X + space sequence)"
+                );
+                assert!(
+                    !follow.shift && !follow.altgr,
+                    "'{ch}' synthesis follow tap must be unmodified SPACE"
+                );
+            }
         }
+    }
+
+    /// Pass 2 (accented letter via `dead_X + base_letter`): `ã` is not
+    /// reachable at any level on us:intl, so it must be synthesized as
+    /// `dead_tilde + a`. This is the deterministic test that proves
+    /// Pass 2 actually fires; the Polish/Spanish tests below cover the
+    /// no-overwrite invariant for layouts that do expose the char
+    /// directly.
+    #[test]
+    fn us_intl_tilde_letter_uses_dead_key_synthesis() {
+        let km = XkbKeymap::from_layout(&KeyboardLayout {
+            layout: "us".to_string(),
+            variant: "intl".to_string(),
+        })
+        .unwrap();
+        let a_main = km.lookup('a').expect("'a' must be in keymap").main;
+        let mapping = km.lookup('ã').expect("ã must be reachable on us:intl");
+        let follow = mapping.follow.expect(
+            "ã on us:intl must be synthesized via dead_tilde + a — \
+             the literal char is not at any level on this layout",
+        );
+        assert_eq!(
+            follow.keycode, a_main.keycode,
+            "ã follow tap must target the same evdev keycode as 'a' \
+             (dead_tilde + a sequence)"
+        );
+    }
+
+    /// Polish exposes `ą` at level 2 directly. The synthesis pass MUST
+    /// NOT overwrite that direct entry — `ą` must keep `follow=None`
+    /// and use AltGr, not synthesize via dead_ogonek + a.
+    #[test]
+    fn polish_accented_letter_is_direct_not_synthesized() {
+        let km = XkbKeymap::from_layout(&layout("pl", "")).unwrap();
+        let mapping = km.lookup('ą').expect("ą must be reachable on Polish");
+        assert!(
+            mapping.follow.is_none(),
+            "ą on Polish must be a direct AltGr tap, not synthesized — \
+             synthesis pass must not overwrite a direct mapping"
+        );
+        assert!(mapping.main.altgr, "ą on Polish must hold AltGr");
+    }
+
+    /// Spanish exposes `ñ` at level 0 directly (it's on the dedicated
+    /// `ñ` key). Even though `ñ` is in `ACCENTED_VIA_DEAD_KEY`, the
+    /// synthesis pass must skip it because the direct entry already
+    /// exists — locks in the cross-layout no-overwrite invariant.
+    #[test]
+    fn spanish_enye_is_direct_not_synthesized() {
+        let km = XkbKeymap::from_layout(&layout("es", "")).unwrap();
+        let mapping = km.lookup('ñ').expect("ñ must be reachable on Spanish");
+        assert!(
+            mapping.follow.is_none(),
+            "ñ on Spanish must be a direct level-0 tap, not synthesized — \
+             synthesis pass must not overwrite even when the char is in \
+             the synthesis table"
+        );
+        assert!(
+            !mapping.main.altgr && !mapping.main.shift,
+            "ñ on Spanish is on a dedicated key — no modifiers required"
+        );
+    }
+
+    // --- Alternative Latin layouts ---
+
+    #[test]
+    fn dvorak_layout() {
+        let km = XkbKeymap::from_layout(&layout("us", "dvorak")).unwrap();
+        assert_key(&km, 'o', 31, false, "Dvorak");
+        assert_key(&km, 'e', 32, false, "Dvorak");
+        assert_key(&km, 's', 39, false, "Dvorak");
+    }
+
+    #[test]
+    fn colemak_layout() {
+        let km = XkbKeymap::from_layout(&layout("us", "colemak")).unwrap();
+        assert_key(&km, 'f', 18, false, "Colemak");
+        assert_key(&km, 'n', 36, false, "Colemak");
+        assert_key(&km, 's', 32, false, "Colemak");
+    }
+
+    // --- Non-Latin layouts ---
+
+    #[test]
+    fn russian_layout() {
+        let km = XkbKeymap::from_layout(&layout("ru", "")).unwrap();
+        assert_key(&km, 'ф', 30, false, "Russian");
+        assert_key(&km, 'я', 44, false, "Russian");
+        assert_key(&km, 'й', 16, false, "Russian");
+        assert_key(&km, 'ц', 17, false, "Russian");
+    }
+
+    #[test]
+    fn ukrainian_layout() {
+        let km = XkbKeymap::from_layout(&layout("ua", "")).unwrap();
+        assert_key(&km, 'ф', 30, false, "Ukrainian");
+        assert_key(&km, 'я', 44, false, "Ukrainian");
+        assert_key(&km, 'й', 16, false, "Ukrainian");
+        assert_key(&km, 'і', 31, false, "Ukrainian");
+    }
+
+    #[test]
+    fn greek_layout() {
+        let km = XkbKeymap::from_layout(&layout("gr", "")).unwrap();
+        assert_key(&km, 'α', 30, false, "Greek");
+        assert_key(&km, 'ζ', 44, false, "Greek");
+        assert_key(&km, 'ω', 47, false, "Greek");
+    }
+
+    #[test]
+    fn japanese_layout() {
+        // Japanese (jp) is QWERTY-based for Latin characters.
+        let km = XkbKeymap::from_layout(&layout("jp", "")).unwrap();
+        assert_key(&km, 'a', 30, false, "Japanese");
+        assert_key(&km, 'z', 44, false, "Japanese");
+    }
+
+    // --- Sway detection regression ---
+
+    /// `KeyboardLayout::from_sway` deliberately returns `None` because
+    /// Sway's `xkb_layout_names` exposes display strings (e.g. `"German"`,
+    /// `"English (US)"`) rather than XKB layout codes (`"de"`, `"us"`).
+    /// Returning `Some(display_name)` would make the caller short-circuit
+    /// the env-var fallback and silently compile against the *default*
+    /// layout, which is the bug this regression test guards against.
+    #[test]
+    fn from_sway_always_returns_none() {
+        // `from_sway` shells out to `swaymsg`; on most CI machines that
+        // command doesn't exist, but if it does we must still see `None`
+        // (the function intentionally never returns `Some` regardless of
+        // what swaymsg replies with).
+        let result = KeyboardLayout::from_sway();
+        assert!(
+            result.is_none(),
+            "from_sway must return None (display names ≠ XKB codes); got {result:?}"
+        );
     }
 }

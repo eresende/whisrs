@@ -15,7 +15,7 @@ Characters not found in the keymap (emoji, rare symbols) are pasted via clipboar
 ## Usage
 
 ```rust
-use xkb_type::Keyboard;
+use xkb_type::{Keyboard, Key};
 use std::time::Duration;
 
 // Auto-detect layout and clipboard backend.
@@ -23,6 +23,27 @@ let mut kb = Keyboard::new(Duration::from_millis(2))?;
 kb.type_text("Hello — こんにちは — €100 — 😀")?;
 kb.backspace(5)?;
 kb.send_combo(&[Key::KEY_LEFTCTRL, Key::KEY_C])?;
+```
+
+To force a specific XKB layout (skips compositor probe):
+
+```rust
+use xkb_type::Keyboard;
+use std::time::Duration;
+
+let mut kb = Keyboard::with_layout("de", None, Duration::from_millis(5))?;
+kb.type_text("Schöne Grüße")?;
+```
+
+To inject your own keymap and clipboard backend:
+
+```rust
+use xkb_type::{Keyboard, XkbKeymap, KeyboardLayout, default_clipboard};
+use std::time::Duration;
+
+let layout = KeyboardLayout::detect();
+let keymap = XkbKeymap::from_layout(&layout)?;
+let mut kb = Keyboard::with_components(keymap, default_clipboard(), Duration::from_millis(5))?;
 ```
 
 ## Requirements
