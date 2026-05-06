@@ -43,6 +43,7 @@ overlay = ["dep:smithay-client-toolkit", "dep:wayland-client", "dep:tiny-skia"]
 anyhow = "1"
 arboard = "3"
 asr-dedup = { path = "crates/asr-dedup" }
+audio-gate = { path = "crates/audio-gate" }
 filler-remove = { path = "crates/filler-remove" }
 prompt-echo = { path = "crates/prompt-echo" }
 async-trait = "0.1"

@@ -3453,6 +3453,7 @@ dependencies = [
  "arboard",
  "asr-dedup",
  "async-trait",
+ "audio-gate",
  "base64",
  "chrono",
  "clap",

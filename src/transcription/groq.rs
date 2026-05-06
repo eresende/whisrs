@@ -7,13 +7,13 @@
 
 use asr_dedup::{TextDedup, TimestampDedup, Word as AsrWord};
 use async_trait::async_trait;
+use audio_gate::is_silent;
 use reqwest::multipart;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use crate::audio::capture::encode_wav;
-use crate::audio::silence::is_silent;
 use crate::audio::AudioChunk;
 
 use super::{TranscriptionBackend, TranscriptionConfig};
