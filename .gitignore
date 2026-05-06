@@ -1,7 +1,12 @@
 /target
+crates/*/target/
+crates/*/Cargo.lock
 /docs/*
 !/docs/comparison.md
 !/docs/configuration.md
 !/docs/faq.md
 !/docs/troubleshooting.md
 !/docs/version-roadmap.md
+.worktrees/
+.deepseek/
+.claude/

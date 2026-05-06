@@ -1,7 +1,13 @@
-//! Silence detection based on RMS energy.
+//! Lightweight RMS-based silence detection and auto-stop for audio capture.
 //!
 //! Used to detect when the user has stopped speaking, for auto-stop
 //! and VAD-based chunk splitting.
+//!
+//! # no_std support
+//!
+//! This crate currently requires `std`. A `#![no_std]` variant is feasible
+//! (only `f64::sqrt` and alloc-only `Vec` in tests) and may be gated
+//! behind a feature flag in a future release.
 
 /// Normalized RMS threshold below which audio is considered silence.
 ///
@@ -39,19 +45,29 @@ pub fn is_silent(samples: &[i16], threshold: f64) -> bool {
 /// Returned by [`audio_gate_reason`]; carries a short human-readable label
 /// that the daemon logs and surfaces in notifications.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GateReason {
+    /// Buffer contains zero samples.
     Empty,
     /// Recording shorter than the minimum allowed duration.
     TooShort,
+    /// Recording's RMS energy is below the configured silence threshold for
+    /// its full duration.
     Silent,
+    /// Caller passed an invalid configuration (e.g. `sample_rate == 0`) so
+    /// the gate cannot compute a meaningful verdict and conservatively
+    /// rejects the buffer.
+    Invalid,
 }
 
 impl GateReason {
+    /// Short human-readable label suitable for logs and notifications.
     pub fn as_str(self) -> &'static str {
         match self {
             GateReason::Empty => "empty",
             GateReason::TooShort => "too short",
             GateReason::Silent => "silent",
+            GateReason::Invalid => "invalid",
         }
     }
 }
@@ -66,18 +82,29 @@ impl GateReason {
 /// Whisper variants (whisper-1, gpt-4o-*-transcribe) hallucinate verbatim
 /// chunks of the supplied `prompt` when the audio carries no speech, so this
 /// gate is the first line of defence against prompt-echo output.
+///
+/// # Contract
+///
+/// `sample_rate` is expected to be the recording sample rate in Hz (e.g.
+/// `16_000`) and must be greater than zero. If `sample_rate == 0` is passed
+/// (a misconfiguration) the function does **not** panic: it returns
+/// `Some(GateReason::Invalid)`, since there is no way to compute a
+/// meaningful duration without a sample rate, and the safest default is to
+/// treat the buffer as ungatable and skip it.
 pub fn audio_gate_reason(
     samples: &[i16],
     sample_rate: u32,
     min_duration_ms: u64,
     threshold: f64,
 ) -> Option<GateReason> {
-    debug_assert!(
-        sample_rate > 0,
-        "audio_gate_reason requires sample_rate > 0"
-    );
     if samples.is_empty() {
         return Some(GateReason::Empty);
+    }
+    if sample_rate == 0 {
+        // Cannot compute duration without a sample rate; conservatively skip
+        // the buffer rather than dividing by zero. This is a misconfiguration
+        // distinct from a too-short recording, so report it as Invalid.
+        return Some(GateReason::Invalid);
     }
     let duration_ms = (samples.len() as u64).saturating_mul(1000) / sample_rate as u64;
     if duration_ms < min_duration_ms {
@@ -108,9 +135,26 @@ impl AutoStopDetector {
     ///
     /// - `threshold`: RMS silence threshold (e.g. 0.005).
     /// - `timeout_ms`: Duration of continuous silence (in milliseconds) to trigger stop.
-    /// - `sample_rate`: Audio sample rate (e.g. 16000).
+    /// - `sample_rate`: Audio sample rate in Hz (e.g. 16000).
+    ///
+    /// # Notes
+    ///
+    /// `sample_rate` and `timeout_ms` are both expected to be greater than
+    /// zero. The constructor does **not** panic on `0` for either argument,
+    /// but `timeout_samples` (the threshold [`feed`](Self::feed) compares
+    /// against) is saturated to a minimum of `1` so that the detector cannot
+    /// auto-stop on the very first speech sample (which would otherwise
+    /// happen because `silent_samples >= 0` is trivially true). Treat
+    /// `0`-valued arguments as a misconfiguration: the detector will still
+    /// behave sanely, but the timeout it enforces will be effectively a
+    /// single sample rather than the duration the caller intended.
     pub fn new(threshold: f64, timeout_ms: u64, sample_rate: u32) -> Self {
-        let timeout_samples = (timeout_ms * sample_rate as u64) / 1000;
+        // Saturate to >=1 so that a misconfigured `sample_rate == 0` or
+        // `timeout_ms == 0` does not yield `timeout_samples == 0`, which
+        // would cause `feed()` to auto-stop on the first detected speech
+        // chunk (since `silent_samples >= 0` is trivially true once
+        // `speech_detected` flips).
+        let timeout_samples = ((timeout_ms.saturating_mul(sample_rate as u64)) / 1000).max(1);
         Self {
             threshold,
             silent_samples: 0,
@@ -295,6 +339,60 @@ mod tests {
             .map(|i| ((i as f64 * 0.1).sin() * 16_000.0) as i16)
             .collect();
         assert_eq!(audio_gate_reason(&samples, 16_000, 300, 0.005), None);
+    }
+
+    #[test]
+    fn gate_handles_zero_sample_rate_without_panic() {
+        // Non-empty buffer with sample_rate = 0 must not panic (would have
+        // divided by zero pre-fix). Reported as Invalid — a misconfiguration,
+        // distinct from a duration verdict like TooShort.
+        let samples: Vec<i16> = vec![10_000; 1_600];
+        assert_eq!(
+            audio_gate_reason(&samples, 0, 300, 0.005),
+            Some(GateReason::Invalid)
+        );
+
+        // Empty buffer with sample_rate = 0 still hits the Empty path first.
+        assert_eq!(
+            audio_gate_reason(&[], 0, 300, 0.005),
+            Some(GateReason::Empty)
+        );
+    }
+
+    #[test]
+    fn auto_stop_handles_zero_sample_rate() {
+        // sample_rate = 0 must not yield timeout_samples = 0 (which would
+        // make feed() auto-stop on the first speech chunk because
+        // `silent_samples >= 0` is trivially true). Saturated to >=1.
+        let mut detector = AutoStopDetector::new(0.01, 2000, 0);
+
+        // Speech alone should NOT trigger auto-stop — speech_detected flips
+        // but silent_samples is reset to 0, which is below the saturated
+        // timeout of 1.
+        let loud: Vec<i16> = vec![10_000; 1_600];
+        assert!(!detector.feed(&loud));
+        assert!(detector.has_speech());
+
+        // A single silent sample is enough to trip the saturated timeout
+        // of 1 once speech has been detected — this is the expected
+        // misconfiguration behavior, documented on `new`.
+        let silence = vec![0i16; 1];
+        assert!(detector.feed(&silence));
+    }
+
+    #[test]
+    fn auto_stop_handles_zero_timeout() {
+        // timeout_ms = 0 must not yield timeout_samples = 0 either; same
+        // saturation contract as zero sample_rate.
+        let mut detector = AutoStopDetector::new(0.01, 0, 16_000);
+
+        let loud: Vec<i16> = vec![10_000; 1_600];
+        assert!(!detector.feed(&loud));
+        assert!(detector.has_speech());
+
+        // Saturated timeout = 1 sample; one silent sample trips it.
+        let silence = vec![0i16; 1];
+        assert!(detector.feed(&silence));
     }
 
     #[test]

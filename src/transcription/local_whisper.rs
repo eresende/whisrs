@@ -10,11 +10,11 @@
 
 use std::sync::Arc;
 
+use asr_dedup::TextDedup;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use super::dedup::DeduplicationTracker;
 use super::{TranscriptionBackend, TranscriptionConfig};
 use crate::audio::AudioChunk;
 
@@ -175,7 +175,7 @@ impl TranscriptionBackend for LocalWhisperBackend {
             .ok_or_else(|| anyhow::anyhow!("whisper model not loaded from {}", self.model_path))?;
 
         let mut buffer: Vec<i16> = Vec::new();
-        let mut dedup = DeduplicationTracker::new();
+        let mut dedup = TextDedup::new();
         let mut next_process_at = INITIAL_WINDOW_SAMPLES;
         let mut last_processed_end: usize = 0;
         // Previous full transcription fed as prompt to the next window.
@@ -197,7 +197,7 @@ impl TranscriptionBackend for LocalWhisperBackend {
                 let window = buffer[window_start..window_end].to_vec();
 
                 // Skip silent windows.
-                if !crate::audio::silence::is_silent(&window, SILENCE_THRESHOLD) {
+                if !audio_gate::is_silent(&window, SILENCE_THRESHOLD) {
                     let samples_f32 = i16_to_f32(&window);
                     let ctx_clone = Arc::clone(ctx);
                     let lang = config.language.clone();
@@ -253,9 +253,7 @@ impl TranscriptionBackend for LocalWhisperBackend {
             };
             let remaining = &buffer[remaining_start..];
 
-            if !remaining.is_empty()
-                && !crate::audio::silence::is_silent(remaining, SILENCE_THRESHOLD)
-            {
+            if !remaining.is_empty() && !audio_gate::is_silent(remaining, SILENCE_THRESHOLD) {
                 let samples_f32 = i16_to_f32(remaining);
                 let ctx_clone = Arc::clone(ctx);
                 let lang = config.language.clone();

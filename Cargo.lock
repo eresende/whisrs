@@ -137,6 +137,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
+name = "asr-dedup"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "strsim",
+]
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -272,6 +280,10 @@ name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
+
+[[package]]
+name = "audio-gate"
+version = "0.1.0"
 
 [[package]]
 name = "autocfg"
@@ -901,6 +913,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
 dependencies = [
  "simd-adler32",
+]
+
+[[package]]
+name = "filler-remove"
+version = "0.1.0"
+dependencies = [
+ "regex",
 ]
 
 [[package]]
@@ -2067,6 +2086,10 @@ checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "prompt-echo"
+version = "0.1.0"
 
 [[package]]
 name = "pxfm"
@@ -3427,8 +3450,9 @@ name = "whisrs"
 version = "0.1.11"
 dependencies = [
  "anyhow",
- "arboard",
+ "asr-dedup",
  "async-trait",
+ "audio-gate",
  "base64",
  "chrono",
  "clap",
@@ -3436,18 +3460,18 @@ dependencies = [
  "dialoguer",
  "dirs",
  "evdev",
+ "filler-remove",
  "futures-util",
  "hound",
  "indicatif",
  "ksni",
  "libc",
  "notify-rust",
- "regex",
+ "prompt-echo",
  "reqwest",
  "serde",
  "serde_json",
  "smithay-client-toolkit",
- "strsim",
  "swayipc",
  "thiserror 2.0.18",
  "tiny-skia",
@@ -3459,7 +3483,7 @@ dependencies = [
  "wayland-client",
  "whisper-rs",
  "x11rb",
- "xkbcommon 0.8.0",
+ "xkb-type",
  "zbus",
 ]
 
@@ -3910,6 +3934,19 @@ name = "xcursor"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bec9e4a500ca8864c5b47b8b482a73d62e4237670e5b5f1d6b9e3cae50f28f2b"
+
+[[package]]
+name = "xkb-type"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "evdev",
+ "log",
+ "serde_json",
+ "thiserror 2.0.18",
+ "xkbcommon 0.8.0",
+]
 
 [[package]]
 name = "xkbcommon"

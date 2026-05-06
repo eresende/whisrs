@@ -1,17 +1,9 @@
 //! XKB reverse lookup table: char → (Keycode, Modifiers).
-//!
-//! Uses `xkbcommon` to read the active keyboard layout and build a reverse
-//! mapping so we know which physical key (+ shift) produces each character.
 
+use crate::{KeyMapping, KeyTap};
 use std::collections::HashMap;
 use std::process::Command;
 
-use evdev::Key;
-use tracing::{debug, warn};
-
-use super::{KeyMapping, KeyTap};
-
-/// Detected keyboard layout (XKB layout name and optional variant).
 #[derive(Debug, Clone)]
 pub struct KeyboardLayout {
     pub layout: String,
@@ -19,31 +11,22 @@ pub struct KeyboardLayout {
 }
 
 impl KeyboardLayout {
-    /// Detect the active keyboard layout from the compositor.
-    ///
-    /// Tries Hyprland, then Sway, then `XKB_DEFAULT_LAYOUT` env var.
-    /// Falls back to empty strings (xkbcommon default, typically "us").
     pub fn detect() -> Self {
         if let Some(kl) = Self::from_hyprland() {
-            debug!("detected keyboard layout from Hyprland: {kl:?}");
             return kl;
         }
         if let Some(kl) = Self::from_sway() {
-            debug!("detected keyboard layout from Sway: {kl:?}");
             return kl;
         }
         if let Some(kl) = Self::from_env() {
-            debug!("detected keyboard layout from environment: {kl:?}");
             return kl;
         }
-        warn!("could not detect keyboard layout, falling back to system default");
         Self {
             layout: String::new(),
             variant: String::new(),
         }
     }
 
-    /// Query Hyprland for the active keyboard layout via `hyprctl devices -j`.
     fn from_hyprland() -> Option<Self> {
         let output = Command::new("hyprctl")
             .args(["devices", "-j"])
@@ -52,12 +35,8 @@ impl KeyboardLayout {
         if !output.status.success() {
             return None;
         }
-
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
         let keyboards = json.get("keyboards")?.as_array()?;
-
-        // Find the first keyboard with a non-empty layout, preferring physical
-        // keyboards (name contains "translated" or "at-") over virtual ones.
         let kb = keyboards
             .iter()
             .find(|k| {
@@ -71,18 +50,29 @@ impl KeyboardLayout {
                     !layout.is_empty()
                 })
             })?;
-
         let layout = kb.get("layout")?.as_str()?.to_string();
         let variant = kb
             .get("variant")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-
         Some(Self { layout, variant })
     }
 
     /// Query Sway for the active keyboard layout via `swaymsg -t get_inputs`.
+    ///
+    /// Sway's `xkb_layout_names` array exposes *display* names like
+    /// `"German"` or `"English (US)"`, not the XKB layout codes (`"de"`,
+    /// `"us"`) that `xkbcommon` understands. Feeding a display name into
+    /// `Keymap::new_from_names` causes xkbcommon to silently fall back to
+    /// the compile-time default layout — which in turn would
+    /// short-circuit the env-var / `/etc/default/keyboard` fallbacks that
+    /// can produce the *correct* code.
+    ///
+    /// We therefore confirm Sway is reachable (so the function is not
+    /// dead code) but always return `None`, letting the caller fall
+    /// through to `from_env`. If a real display-name → XKB-code lookup
+    /// table is added later, this is the place to wire it up.
     fn from_sway() -> Option<Self> {
         let output = Command::new("swaymsg")
             .args(["-t", "get_inputs", "--raw"])
@@ -94,34 +84,27 @@ impl KeyboardLayout {
 
         let inputs: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).ok()?;
 
-        // Find the first keyboard input with xkb_active_layout_name.
+        // Confirm there is at least one keyboard input with an active
+        // layout — guards against running this on an X11 session where
+        // swaymsg may exist but not return useful data.
         let kb = inputs.iter().find(|i| {
             i.get("type").and_then(|t| t.as_str()) == Some("keyboard")
                 && i.get("xkb_active_layout_name").is_some()
         })?;
 
-        // Sway exposes layout in xkb_layout_names array and
-        // xkb_active_layout_index for the active one.
+        // Confirm the layout-name array is well-formed; we don't use
+        // the value because it's a display name, not an XKB code.
         let layout_names = kb.get("xkb_layout_names")?.as_array()?;
         let active_idx = kb
             .get("xkb_active_layout_index")
             .and_then(|i| i.as_u64())
             .unwrap_or(0) as usize;
+        let _display_name = layout_names.get(active_idx)?.as_str()?;
 
-        // The layout names are human-readable (e.g. "German"), but we need
-        // the XKB name. Sway stores that in the input's libinput config.
-        // Fallback: parse from sway config or use XKB_DEFAULT_LAYOUT.
-        // For now, try to get it from the identifier which contains the layout.
-        // Actually, swaymsg get_inputs provides xkb_layout_names as display names
-        // but the actual XKB layout is set in sway config. We can check env vars.
-        let _active_name = layout_names.get(active_idx)?.as_str()?;
-
-        // Sway doesn't directly expose the XKB layout code in get_inputs.
-        // Fall through to env var detection.
+        // Intentionally fall through — see the doc comment above.
         None
     }
 
-    /// Read layout from `XKB_DEFAULT_LAYOUT` and `XKB_DEFAULT_VARIANT` env vars.
     fn from_env() -> Option<Self> {
         let layout = std::env::var("XKB_DEFAULT_LAYOUT").ok()?;
         if layout.is_empty() {
@@ -132,23 +115,20 @@ impl KeyboardLayout {
     }
 }
 
-/// Reverse lookup table from character to the key event needed to produce it.
 pub struct XkbKeymap {
     map: HashMap<char, KeyMapping>,
 }
 
 impl XkbKeymap {
-    /// Build the reverse keymap from a detected keyboard layout.
     pub fn from_layout(detected: &KeyboardLayout) -> anyhow::Result<Self> {
         let context = xkbcommon::xkb::Context::new(xkbcommon::xkb::CONTEXT_NO_FLAGS);
-
         let keymap = xkbcommon::xkb::Keymap::new_from_names(
             &context,
-            "",                // rules
-            "",                // model
-            &detected.layout,  // layout (e.g. "de", "fr", "us")
-            &detected.variant, // variant (e.g. "nodeadkeys")
-            None,              // options
+            "",
+            "",
+            &detected.layout,
+            &detected.variant,
+            None,
             xkbcommon::xkb::KEYMAP_COMPILE_NO_FLAGS,
         )
         .ok_or_else(|| {
@@ -158,142 +138,84 @@ impl XkbKeymap {
                 detected.variant
             )
         })?;
-
         let map = build_reverse_map(&keymap);
-        debug!(
-            "built XKB reverse keymap with {} entries for layout='{}' variant='{}'",
-            map.len(),
-            detected.layout,
-            detected.variant
-        );
-
         Ok(Self { map })
     }
 
-    /// Look up the key mapping for a character.
     pub fn lookup(&self, ch: char) -> Option<&KeyMapping> {
         self.map.get(&ch)
     }
-
-    /// Number of entries in the keymap.
     pub fn len(&self) -> usize {
         self.map.len()
     }
-
-    /// Whether the keymap is empty.
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
 }
 
-// Dead-key keysyms re-exported from xkbcommon, named locally for legibility
-// in the synthesis tables below.
 use xkbcommon::xkb::keysyms::{
-    KEY_dead_acute as XK_DEAD_ACUTE, KEY_dead_cedilla as XK_DEAD_CEDILLA,
-    KEY_dead_circumflex as XK_DEAD_CIRCUMFLEX, KEY_dead_diaeresis as XK_DEAD_DIAERESIS,
-    KEY_dead_grave as XK_DEAD_GRAVE, KEY_dead_tilde as XK_DEAD_TILDE,
+    KEY_dead_acute, KEY_dead_cedilla, KEY_dead_circumflex, KEY_dead_diaeresis, KEY_dead_grave,
+    KEY_dead_tilde,
 };
 
-/// Accented characters synthesised as `dead_X + base_letter` when they
-/// are missing from the direct layout mapping. Covers the Romance-language
-/// set used in everyday Portuguese/Spanish/French/Italian; layouts that
-/// already expose these chars at level 2 (e.g. `us:intl` puts `á` directly
-/// on AltGr+a) skip the synthesis and use the direct entry.
-///
-/// This is intentionally a Romance-language seed list rather than an
-/// exhaustive dead-key table. Most other scripts (German `ß`, Polish ą/ę,
-/// Nordic å/ø/æ, Hungarian ő/ű) expose their accented characters directly
-/// at level 2 or 3 of their native layout, so the level 0..=3 walk above
-/// catches them and they don't need synthesis here. Extend per-script
-/// when a real-world layout falls through both routes.
 const ACCENTED_VIA_DEAD_KEY: &[(char, char, u32)] = &[
-    // tilde
-    ('ã', 'a', XK_DEAD_TILDE),
-    ('õ', 'o', XK_DEAD_TILDE),
-    ('ñ', 'n', XK_DEAD_TILDE),
-    ('Ã', 'A', XK_DEAD_TILDE),
-    ('Õ', 'O', XK_DEAD_TILDE),
-    ('Ñ', 'N', XK_DEAD_TILDE),
-    // acute
-    ('á', 'a', XK_DEAD_ACUTE),
-    ('é', 'e', XK_DEAD_ACUTE),
-    ('í', 'i', XK_DEAD_ACUTE),
-    ('ó', 'o', XK_DEAD_ACUTE),
-    ('ú', 'u', XK_DEAD_ACUTE),
-    ('ý', 'y', XK_DEAD_ACUTE),
-    ('Á', 'A', XK_DEAD_ACUTE),
-    ('É', 'E', XK_DEAD_ACUTE),
-    ('Í', 'I', XK_DEAD_ACUTE),
-    ('Ó', 'O', XK_DEAD_ACUTE),
-    ('Ú', 'U', XK_DEAD_ACUTE),
-    // circumflex
-    ('â', 'a', XK_DEAD_CIRCUMFLEX),
-    ('ê', 'e', XK_DEAD_CIRCUMFLEX),
-    ('î', 'i', XK_DEAD_CIRCUMFLEX),
-    ('ô', 'o', XK_DEAD_CIRCUMFLEX),
-    ('û', 'u', XK_DEAD_CIRCUMFLEX),
-    ('Â', 'A', XK_DEAD_CIRCUMFLEX),
-    ('Ê', 'E', XK_DEAD_CIRCUMFLEX),
-    ('Ô', 'O', XK_DEAD_CIRCUMFLEX),
-    // grave
-    ('à', 'a', XK_DEAD_GRAVE),
-    ('è', 'e', XK_DEAD_GRAVE),
-    ('ì', 'i', XK_DEAD_GRAVE),
-    ('ò', 'o', XK_DEAD_GRAVE),
-    ('ù', 'u', XK_DEAD_GRAVE),
-    ('À', 'A', XK_DEAD_GRAVE),
-    // diaeresis / umlaut
-    ('ä', 'a', XK_DEAD_DIAERESIS),
-    ('ë', 'e', XK_DEAD_DIAERESIS),
-    ('ï', 'i', XK_DEAD_DIAERESIS),
-    ('ö', 'o', XK_DEAD_DIAERESIS),
-    ('ü', 'u', XK_DEAD_DIAERESIS),
-    // cedilla
-    ('ç', 'c', XK_DEAD_CEDILLA),
-    ('Ç', 'C', XK_DEAD_CEDILLA),
+    ('ã', 'a', KEY_dead_tilde),
+    ('õ', 'o', KEY_dead_tilde),
+    ('ñ', 'n', KEY_dead_tilde),
+    ('Ã', 'A', KEY_dead_tilde),
+    ('Õ', 'O', KEY_dead_tilde),
+    ('Ñ', 'N', KEY_dead_tilde),
+    ('á', 'a', KEY_dead_acute),
+    ('é', 'e', KEY_dead_acute),
+    ('í', 'i', KEY_dead_acute),
+    ('ó', 'o', KEY_dead_acute),
+    ('ú', 'u', KEY_dead_acute),
+    ('ý', 'y', KEY_dead_acute),
+    ('Á', 'A', KEY_dead_acute),
+    ('É', 'E', KEY_dead_acute),
+    ('Í', 'I', KEY_dead_acute),
+    ('Ó', 'O', KEY_dead_acute),
+    ('Ú', 'U', KEY_dead_acute),
+    ('â', 'a', KEY_dead_circumflex),
+    ('ê', 'e', KEY_dead_circumflex),
+    ('î', 'i', KEY_dead_circumflex),
+    ('ô', 'o', KEY_dead_circumflex),
+    ('û', 'u', KEY_dead_circumflex),
+    ('Â', 'A', KEY_dead_circumflex),
+    ('Ê', 'E', KEY_dead_circumflex),
+    ('Ô', 'O', KEY_dead_circumflex),
+    ('à', 'a', KEY_dead_grave),
+    ('è', 'e', KEY_dead_grave),
+    ('ì', 'i', KEY_dead_grave),
+    ('ò', 'o', KEY_dead_grave),
+    ('ù', 'u', KEY_dead_grave),
+    ('À', 'A', KEY_dead_grave),
+    ('ä', 'a', KEY_dead_diaeresis),
+    ('ë', 'e', KEY_dead_diaeresis),
+    ('ï', 'i', KEY_dead_diaeresis),
+    ('ö', 'o', KEY_dead_diaeresis),
+    ('ü', 'u', KEY_dead_diaeresis),
+    ('ç', 'c', KEY_dead_cedilla),
+    ('Ç', 'C', KEY_dead_cedilla),
 ];
 
-/// Iterate all keycodes and shift levels to build a `char → KeyMapping` table.
-///
-/// Levels 0..=3 are all surfaced as direct mappings, with the appropriate
-/// modifiers (`shift`, `altgr`) recorded — so e.g. `ç` (level 2 on us:intl)
-/// becomes a single-keypress tap with AltGr held, no clipboard fallback.
-///
-/// In addition, dead-key keysyms encountered during the walk are recorded
-/// so a small fallback table can be appended for the literal punctuation
-/// they produce when followed by Space (`'`, `"`, `~`, `` ` ``, `^`).
-fn build_reverse_map(keymap: &xkbcommon::xkb::Keymap) -> HashMap<char, KeyMapping> {
+#[allow(non_upper_case_globals)]
+pub(crate) fn build_reverse_map(keymap: &xkbcommon::xkb::Keymap) -> HashMap<char, KeyMapping> {
     let mut map: HashMap<char, KeyMapping> = HashMap::new();
-    // Dead keysym → KeyTap so we know which physical key (and modifiers)
-    // produces each dead key on this layout. Used by the fallback passes
-    // below to synthesise dead+space and dead+base sequences.
     let mut dead_keys: HashMap<u32, KeyTap> = HashMap::new();
-
-    // xkb keycodes: iterate from min to max.
     let min = keymap.min_keycode().raw();
     let max = keymap.max_keycode().raw();
-
     let num_layouts = keymap.num_layouts();
 
     for raw_keycode in min..=max {
         let keycode = xkbcommon::xkb::Keycode::new(raw_keycode);
-
         for layout in 0..num_layouts {
             let num_levels = keymap.num_levels_for_key(keycode, layout);
-
             for level in 0..num_levels {
-                let syms = keymap.key_get_syms_by_level(keycode, layout, level);
-
-                // Skip levels we can't drive with the modifiers we have
-                // wired up (Shift, AltGr, Shift+AltGr — that covers 0..=3).
                 if level > 3 {
                     continue;
                 }
-
-                // The evdev keycode is the XKB keycode minus 8
-                // (XKB adds 8 to Linux input keycodes). Linux KEY_MAX is
-                // ~767 so the cast is safe; saturate explicitly rather
-                // than truncating with `as` to keep the intent obvious.
+                let syms = keymap.key_get_syms_by_level(keycode, layout, level);
                 let evdev_keycode: u16 =
                     raw_keycode.saturating_sub(8).try_into().unwrap_or(u16::MAX);
                 let shift = level == 1 || level == 3;
@@ -301,18 +223,14 @@ fn build_reverse_map(keymap: &xkbcommon::xkb::Keymap) -> HashMap<char, KeyMappin
 
                 for &sym in syms {
                     let raw = sym.raw();
-
-                    // Track dead keysyms separately — they have no Unicode
-                    // value of their own but we'll need their keycodes for
-                    // the fallback synthesis below.
                     if matches!(
                         raw,
-                        XK_DEAD_GRAVE
-                            | XK_DEAD_ACUTE
-                            | XK_DEAD_CIRCUMFLEX
-                            | XK_DEAD_TILDE
-                            | XK_DEAD_DIAERESIS
-                            | XK_DEAD_CEDILLA
+                        KEY_dead_grave
+                            | KEY_dead_acute
+                            | KEY_dead_circumflex
+                            | KEY_dead_tilde
+                            | KEY_dead_diaeresis
+                            | KEY_dead_cedilla
                     ) {
                         dead_keys.entry(raw).or_insert(KeyTap {
                             keycode: evdev_keycode,
@@ -321,39 +239,32 @@ fn build_reverse_map(keymap: &xkbcommon::xkb::Keymap) -> HashMap<char, KeyMappin
                         });
                         continue;
                     }
-
                     let unicode = xkbcommon::xkb::keysym_to_utf32(sym);
                     if unicode == 0 {
                         continue;
                     }
-
                     if let Some(ch) = char::from_u32(unicode) {
-                        let mapping = KeyMapping {
+                        map.entry(ch).or_insert(KeyMapping {
                             main: KeyTap {
                                 keycode: evdev_keycode,
                                 shift,
                                 altgr,
                             },
                             follow: None,
-                        };
-
-                        // Prefer the lowest-level mapping. Iteration is in
-                        // level order so first-come (level 0) wins.
-                        map.entry(ch).or_insert(mapping);
+                        });
                     }
                 }
             }
         }
     }
 
-    // Pass 1: literal punctuation via `dead_X + Space`. Used on layouts
-    // where the apostrophe, tilde, etc. exist only as dead keys (us:intl).
+    // Pass 1: dead_X + Space for literal punctuation
     for (ch, dead_sym) in [
-        ('\'', XK_DEAD_ACUTE),
-        ('"', XK_DEAD_DIAERESIS),
-        ('~', XK_DEAD_TILDE),
-        ('`', XK_DEAD_GRAVE),
-        ('^', XK_DEAD_CIRCUMFLEX),
+        ('\'', KEY_dead_acute),
+        ('"', KEY_dead_diaeresis),
+        ('~', KEY_dead_tilde),
+        ('`', KEY_dead_grave),
+        ('^', KEY_dead_circumflex),
     ] {
         if map.contains_key(&ch) {
             continue;
@@ -364,51 +275,26 @@ fn build_reverse_map(keymap: &xkbcommon::xkb::Keymap) -> HashMap<char, KeyMappin
                 KeyMapping {
                     main: *dk,
                     follow: Some(KeyTap {
-                        keycode: Key::KEY_SPACE.code(),
+                        keycode: evdev::Key::KEY_SPACE.code(),
                         shift: false,
                         altgr: false,
                     }),
                 },
             );
-        } else {
-            // No dead key for this accent on the active layout — `ch` will
-            // fall through to clipboard paste, which is broken in terminal
-            // emulators. Logged so a future regression on a layout that
-            // used to support this is debuggable.
-            debug!(
-                "dead-key synthesis pass 1: no `{dead_sym:#x}` on this layout; \
-                 '{ch}' will use clipboard fallback"
-            );
         }
     }
 
-    // Pass 2: accented letters via `dead_X + base_letter`. Used for chars
-    // like `ã` on us:intl, where the layout doesn't expose them at any
-    // directly-reachable level but the dead key for the accent exists.
+    // Pass 2: dead_X + base_letter for accented letters
     for &(ch, base, dead_sym) in ACCENTED_VIA_DEAD_KEY {
         if map.contains_key(&ch) {
             continue;
         }
         let Some(dk) = dead_keys.get(&dead_sym) else {
-            debug!(
-                "dead-key synthesis pass 2: no `{dead_sym:#x}` on this layout; \
-                 '{ch}' will use clipboard fallback"
-            );
             continue;
         };
         let Some(base_map) = map.get(&base).copied() else {
-            debug!(
-                "dead-key synthesis pass 2: base letter '{base}' not in keymap; \
-                 '{ch}' will use clipboard fallback"
-            );
             continue;
         };
-        // Don't chain follow-taps (a base letter that is itself a
-        // dead-key fallback would imply a 3-tap sequence we don't model).
-        // Tripwire: currently unreachable because Pass 1 only inserts
-        // follow=Space entries and `ACCENTED_VIA_DEAD_KEY` only contains
-        // alphabetic bases — no `'`/`"`/`~`/`` ` ``/`^` here. Stays as a
-        // guard for future table additions.
         if base_map.follow.is_some() {
             continue;
         }
@@ -435,28 +321,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn build_us_keymap() {
-        let km = XkbKeymap::from_layout(&us_layout());
-        if let Ok(km) = km {
-            assert!(!km.is_empty(), "keymap should not be empty");
-            assert!(km.lookup('a').is_some(), "'a' should be in the keymap");
-        }
-    }
-
-    #[test]
-    fn shift_mapping_for_uppercase() {
-        let km = XkbKeymap::from_layout(&us_layout());
-        if let Ok(km) = km {
-            if let Some(mapping) = km.lookup('A') {
-                assert!(
-                    mapping.main.shift,
-                    "uppercase 'A' should require shift on standard layouts"
-                );
-            }
-        }
-    }
-
     fn layout(name: &str, variant: &str) -> KeyboardLayout {
         KeyboardLayout {
             layout: name.to_string(),
@@ -464,8 +328,6 @@ mod tests {
         }
     }
 
-    /// Helper: assert a character maps to the expected evdev keycode and shift state.
-    /// Asserts altgr is false (the common case for level-0/1 chars).
     fn assert_key(
         km: &XkbKeymap,
         ch: char,
@@ -476,7 +338,6 @@ mod tests {
         assert_key_full(km, ch, expected_keycode, expected_shift, false, label);
     }
 
-    /// Helper: assert keycode + shift + altgr.
     fn assert_key_full(
         km: &XkbKeymap,
         ch: char,
@@ -501,6 +362,28 @@ mod tests {
             mapping.main.altgr, expected_altgr,
             "'{ch}' altgr should be {expected_altgr} on {label}"
         );
+    }
+
+    #[test]
+    fn build_us_keymap() {
+        let km = XkbKeymap::from_layout(&us_layout());
+        if let Ok(km) = km {
+            assert!(!km.is_empty(), "keymap should not be empty");
+            assert!(km.lookup('a').is_some(), "'a' should be in the keymap");
+        }
+    }
+
+    #[test]
+    fn shift_mapping_for_uppercase() {
+        let km = XkbKeymap::from_layout(&us_layout());
+        if let Ok(km) = km {
+            if let Some(mapping) = km.lookup('A') {
+                assert!(
+                    mapping.main.shift,
+                    "uppercase 'A' should require shift on standard layouts"
+                );
+            }
+        }
     }
 
     // --- QWERTZ family (y/z swapped) ---
@@ -812,5 +695,26 @@ mod tests {
         let km = XkbKeymap::from_layout(&layout("jp", "")).unwrap();
         assert_key(&km, 'a', 30, false, "Japanese");
         assert_key(&km, 'z', 44, false, "Japanese");
+    }
+
+    // --- Sway detection regression ---
+
+    /// `KeyboardLayout::from_sway` deliberately returns `None` because
+    /// Sway's `xkb_layout_names` exposes display strings (e.g. `"German"`,
+    /// `"English (US)"`) rather than XKB layout codes (`"de"`, `"us"`).
+    /// Returning `Some(display_name)` would make the caller short-circuit
+    /// the env-var fallback and silently compile against the *default*
+    /// layout, which is the bug this regression test guards against.
+    #[test]
+    fn from_sway_always_returns_none() {
+        // `from_sway` shells out to `swaymsg`; on most CI machines that
+        // command doesn't exist, but if it does we must still see `None`
+        // (the function intentionally never returns `Some` regardless of
+        // what swaymsg replies with).
+        let result = KeyboardLayout::from_sway();
+        assert!(
+            result.is_none(),
+            "from_sway must return None (display names ≠ XKB codes); got {result:?}"
+        );
     }
 }
