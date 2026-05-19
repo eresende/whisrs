@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite;
 use tracing::{debug, error, info, warn};
 
@@ -53,9 +53,28 @@ struct SessionUpdate {
 
 #[derive(Debug, Serialize)]
 struct SessionConfig {
-    input_audio_format: String,
-    input_audio_transcription: AudioTranscriptionConfig,
-    turn_detection: TurnDetectionConfig,
+    #[serde(rename = "type")]
+    session_type: String,
+    audio: SessionAudioConfig,
+}
+
+#[derive(Debug, Serialize)]
+struct SessionAudioConfig {
+    input: SessionAudioInputConfig,
+}
+
+#[derive(Debug, Serialize)]
+struct SessionAudioInputConfig {
+    format: AudioInputFormatConfig,
+    transcription: AudioTranscriptionConfig,
+    turn_detection: Option<TurnDetectionConfig>,
+}
+
+#[derive(Debug, Serialize)]
+struct AudioInputFormatConfig {
+    #[serde(rename = "type")]
+    format_type: String,
+    rate: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -71,6 +90,23 @@ struct AudioTranscriptionConfig {
 struct TurnDetectionConfig {
     #[serde(rename = "type")]
     detection_type: String,
+    threshold: f32,
+    prefix_padding_ms: u32,
+    silence_duration_ms: u32,
+}
+
+impl TurnDetectionConfig {
+    /// Standard server-VAD defaults for the OpenAI Realtime transcription API.
+    /// These match the values OpenAI's docs use for the `intent=transcription`
+    /// session type and stream mid-utterance partial transcripts.
+    fn server_vad_default() -> Self {
+        Self {
+            detection_type: "server_vad".to_string(),
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 500,
+        }
+    }
 }
 
 /// Client message: input_audio_buffer.append
@@ -79,6 +115,13 @@ struct AudioBufferAppend {
     #[serde(rename = "type")]
     msg_type: String,
     audio: String,
+}
+
+/// Client message: input_audio_buffer.commit
+#[derive(Debug, Serialize)]
+struct AudioBufferCommit {
+    #[serde(rename = "type")]
+    msg_type: String,
 }
 
 /// Server message envelope — we parse the `type` field first, then
@@ -113,16 +156,22 @@ impl SessionUpdate {
             language.to_string()
         };
         Self {
-            msg_type: "transcription_session.update".to_string(),
+            msg_type: "session.update".to_string(),
             session: SessionConfig {
-                input_audio_format: "pcm16".to_string(),
-                input_audio_transcription: AudioTranscriptionConfig {
-                    model: model.to_string(),
-                    language: lang,
-                    prompt: clamp_prompt(prompt),
-                },
-                turn_detection: TurnDetectionConfig {
-                    detection_type: "server_vad".to_string(),
+                session_type: "transcription".to_string(),
+                audio: SessionAudioConfig {
+                    input: SessionAudioInputConfig {
+                        format: AudioInputFormatConfig {
+                            format_type: "audio/pcm".to_string(),
+                            rate: 24_000,
+                        },
+                        transcription: AudioTranscriptionConfig {
+                            model: model.to_string(),
+                            language: lang,
+                            prompt: clamp_prompt(prompt),
+                        },
+                        turn_detection: Some(TurnDetectionConfig::server_vad_default()),
+                    },
                 },
             },
         }
@@ -150,6 +199,14 @@ impl AudioBufferAppend {
         Self {
             msg_type: "input_audio_buffer.append".to_string(),
             audio: base64_audio,
+        }
+    }
+}
+
+impl AudioBufferCommit {
+    fn new() -> Self {
+        Self {
+            msg_type: "input_audio_buffer.commit".to_string(),
         }
     }
 }
@@ -241,14 +298,13 @@ impl TranscriptionBackend for OpenAIRealtimeBackend {
     ) -> anyhow::Result<()> {
         let api_key = self.resolve_api_key()?;
         let model = &config.model;
-        let url = "wss://api.openai.com/v1/realtime?intent=transcription".to_string();
+        let url = "wss://api.openai.com/v1/realtime?intent=transcription";
 
         info!("connecting to OpenAI Realtime API: {url}");
 
         let request = tungstenite::http::Request::builder()
-            .uri(&url)
+            .uri(url)
             .header("Authorization", format!("Bearer {api_key}"))
-            .header("OpenAI-Beta", "realtime=v1")
             .header(
                 "Sec-WebSocket-Key",
                 tungstenite::handshake::client::generate_key(),
@@ -270,7 +326,15 @@ impl TranscriptionBackend for OpenAIRealtimeBackend {
         ws_sink
             .send(tungstenite::Message::Text(session_json.into()))
             .await?;
-        debug!("sent transcription_session.update for model={model}");
+        debug!("sent session.update for transcription model={model}");
+
+        // Oneshot signal from the receive loop to the send task: fire once
+        // the server has emitted the terminal
+        // `conversation.item.input_audio_transcription.completed` event (or
+        // any other terminal signal). The send task waits on this before
+        // closing the WebSocket, with a generous safety timeout to avoid
+        // hanging forever if the server stalls.
+        let (done_tx, done_rx) = oneshot::channel::<()>();
 
         // Spawn a task to send audio.
         let send_task = tokio::spawn(async move {
@@ -296,30 +360,49 @@ impl TranscriptionBackend for OpenAIRealtimeBackend {
                 }
             }
 
-            // All real audio sent. Send a short silence burst so the
-            // server VAD detects end-of-speech and triggers transcription
-            // for any remaining buffered audio.
-            debug!("sending silence for VAD end-of-speech detection");
-            let silence_samples = vec![0i16; 12_000]; // 0.5s at 24kHz
-            let silence_b64 = encode_pcm_base64(&silence_samples);
-            let msg = AudioBufferAppend::new(silence_b64);
-            if let Ok(json) = serde_json::to_string(&msg) {
-                ws_sink
+            // All real audio sent. Send an explicit commit to signal "user
+            // pressed stop" — server VAD handles mid-utterance segmentation
+            // on its own, but the commit is still required to flush any
+            // trailing audio that didn't trigger a VAD stop.
+            debug!("committing audio buffer for transcription");
+            if let Ok(json) = serde_json::to_string(&AudioBufferCommit::new()) {
+                if ws_sink
                     .send(tungstenite::Message::Text(json.into()))
                     .await
-                    .ok();
+                    .is_err()
+                {
+                    error!("WebSocket commit failed — connection may be closed");
+                }
             }
 
-            // Wait for the server to process remaining audio and send
-            // transcription events, then close the WebSocket. This ends
-            // the receive loop via the Close frame.
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            debug!("closing WebSocket after post-silence delay");
+            // Wait for the receive loop to observe the terminal transcription
+            // event, then close. A 30-second safety timeout protects against
+            // a stuck server. The previous hard 3-second sleep truncated
+            // long transcripts; this is event-driven instead.
+            match tokio::time::timeout(std::time::Duration::from_secs(30), done_rx).await {
+                Ok(Ok(())) => {
+                    debug!("closing WebSocket after terminal transcription event");
+                }
+                Ok(Err(_)) => {
+                    debug!("done channel dropped (receive loop exited) — closing WebSocket");
+                }
+                Err(_) => {
+                    warn!("no terminal transcription event after 30s — closing WebSocket anyway");
+                }
+            }
             ws_sink.send(tungstenite::Message::Close(None)).await.ok();
         });
 
-        // Receive transcription events (with a timeout to avoid hanging forever).
-        let timeout_duration = std::time::Duration::from_secs(15);
+        // Wrap `done_tx` in an Option so the receive loop can take it on the
+        // first terminal event and ensure we only ever send once.
+        let mut done_tx = Some(done_tx);
+
+        // Receive transcription events. The per-message timeout is a safety
+        // net against a stalled connection — for long utterances the server
+        // can take >15s after commit to return the completed event, so we
+        // use a generous bound here. The terminal `completed` event is what
+        // normally ends this loop (via the Close frame from the send task).
+        let timeout_duration = std::time::Duration::from_secs(60);
         while let Ok(Some(msg_result)) =
             tokio::time::timeout(timeout_duration, ws_source.next()).await
         {
@@ -339,6 +422,11 @@ impl TranscriptionBackend for OpenAIRealtimeBackend {
                                 if let Some(transcript) = server_msg.transcript {
                                     debug!("realtime completed: {transcript}");
                                 }
+                                // Terminal event for this utterance — let the
+                                // send task close the WebSocket cleanly.
+                                if let Some(tx) = done_tx.take() {
+                                    tx.send(()).ok();
+                                }
                             }
                             "error" | "conversation.item.input_audio_transcription.failed" => {
                                 let err_msg = server_msg
@@ -348,6 +436,11 @@ impl TranscriptionBackend for OpenAIRealtimeBackend {
                                 error!("OpenAI Realtime error: {err_msg}");
                                 // Log the raw message for debugging.
                                 debug!("raw error message: {text}");
+                                // Treat as terminal so we don't wait the full
+                                // 30s safety timeout on a failed transcription.
+                                if let Some(tx) = done_tx.take() {
+                                    tx.send(()).ok();
+                                }
                             }
                             "session.created"
                             | "session.updated"
@@ -401,17 +494,27 @@ mod tests {
         let msg = SessionUpdate::new("gpt-4o-mini-transcribe", "en", None);
         let json = serde_json::to_value(&msg).unwrap();
 
-        assert_eq!(json["type"], "transcription_session.update");
-        assert_eq!(json["session"]["input_audio_format"], "pcm16");
+        assert_eq!(json["type"], "session.update");
+        assert_eq!(json["session"]["type"], "transcription");
         assert_eq!(
-            json["session"]["input_audio_transcription"]["model"],
+            json["session"]["audio"]["input"]["format"]["type"],
+            "audio/pcm"
+        );
+        assert_eq!(json["session"]["audio"]["input"]["format"]["rate"], 24000);
+        assert_eq!(
+            json["session"]["audio"]["input"]["transcription"]["model"],
             "gpt-4o-mini-transcribe"
         );
         assert_eq!(
-            json["session"]["input_audio_transcription"]["language"],
+            json["session"]["audio"]["input"]["transcription"]["language"],
             "en"
         );
-        assert_eq!(json["session"]["turn_detection"]["type"], "server_vad");
+        // Server VAD is enabled by default so deltas stream during recording.
+        let turn = &json["session"]["audio"]["input"]["turn_detection"];
+        assert_eq!(turn["type"], "server_vad");
+        assert_eq!(turn["threshold"], 0.5);
+        assert_eq!(turn["prefix_padding_ms"], 300);
+        assert_eq!(turn["silence_duration_ms"], 500);
     }
 
     #[test]
@@ -420,7 +523,7 @@ mod tests {
         let json = serde_json::to_value(&msg).unwrap();
 
         // "auto" should be converted to empty string and skipped
-        assert!(json["session"]["input_audio_transcription"]
+        assert!(json["session"]["audio"]["input"]["transcription"]
             .get("language")
             .is_none());
     }
@@ -430,7 +533,7 @@ mod tests {
         let msg = SessionUpdate::new("gpt-4o-transcribe", "en", Some("Yocto, Hyprland, NixOS"));
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(
-            json["session"]["input_audio_transcription"]["prompt"],
+            json["session"]["audio"]["input"]["transcription"]["prompt"],
             "Yocto, Hyprland, NixOS"
         );
     }
@@ -439,7 +542,7 @@ mod tests {
     fn session_update_without_prompt_omits_field() {
         let msg = SessionUpdate::new("gpt-4o-transcribe", "en", None);
         let json = serde_json::to_value(&msg).unwrap();
-        assert!(json["session"]["input_audio_transcription"]
+        assert!(json["session"]["audio"]["input"]["transcription"]
             .get("prompt")
             .is_none());
     }
@@ -448,7 +551,7 @@ mod tests {
     fn session_update_blank_prompt_omits_field() {
         let msg = SessionUpdate::new("gpt-4o-transcribe", "en", Some("   \t\n  "));
         let json = serde_json::to_value(&msg).unwrap();
-        assert!(json["session"]["input_audio_transcription"]
+        assert!(json["session"]["audio"]["input"]["transcription"]
             .get("prompt")
             .is_none());
     }
