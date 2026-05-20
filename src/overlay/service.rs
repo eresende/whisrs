@@ -15,9 +15,9 @@ enum OverlayError {
     Shm(#[from] smithay_client_toolkit::shm::CreatePoolError),
     #[error("Wayland dispatch error: {0}")]
     Dispatch(#[from] wayland_client::DispatchError),
-    #[error("X11 connection error: {0}")]
+    #[error("X11 display connect error: {0}")]
     X11Connect(#[from] x11rb::errors::ConnectError),
-    #[error("X11 connection error: {0}")]
+    #[error("X11 protocol/IO error: {0}")]
     X11Connection(#[from] x11rb::errors::ConnectionError),
     #[error("X11 reply error: {0}")]
     X11Reply(#[from] x11rb::errors::ReplyError),
@@ -78,7 +78,7 @@ const BOTTOM_MARGIN: i32 = 16;
 // Per-frame sleep matching the draw loop. ~16 ms ≈ 60 fps for visibly
 // smoother motion. Spawn animation progress is wall-clock-driven (see
 // `Overlay::spawn_t`), so this only caps the redraw rate.
-const FRAME_MS: f32 = 16.0;
+const FRAME_MS: u64 = 16;
 
 // Spawn animation: the pill "draws out" from a 4-px sliver anchored at the
 // bottom of the surface up to its full configured height. Slight overshoot
@@ -230,6 +230,7 @@ pub async fn spawn_overlay(
     let (level_tx, level_rx_thread) = mpsc::channel::<f32>();
 
     let backend = OverlayBackend::detect();
+    info!("overlay backend selected: {backend:?}");
     let overlay_config = config;
     std::thread::Builder::new()
         .name("whisrs-overlay".to_string())
@@ -276,7 +277,9 @@ enum OverlayBackend {
 
 impl OverlayBackend {
     fn detect() -> Self {
-        if env_var_is_set("WAYLAND_DISPLAY") && !matches_env("XDG_SESSION_TYPE", "x11") {
+        let session_is_wayland = matches_env("XDG_SESSION_TYPE", "wayland");
+        let session_is_x11 = matches_env("XDG_SESSION_TYPE", "x11");
+        if (env_var_is_set("WAYLAND_DISPLAY") || session_is_wayland) && !session_is_x11 {
             Self::Wayland
         } else if env_var_is_set("DISPLAY") {
             Self::X11
@@ -444,6 +447,9 @@ fn run_overlay(
     info!("recording overlay started");
     while !overlay.exit {
         overlay.renderer.apply_state_updates();
+        if overlay.renderer.disconnected {
+            break;
+        }
         event_queue.blocking_dispatch(&mut overlay)?;
     }
 
@@ -500,31 +506,48 @@ fn run_x11_overlay(
         OverlayRenderer::new(state_rx, level_rx, width as u32, height as u32, theme)?;
     let mut frame = vec![0_u8; width as usize * height as usize * 4];
     let mut mapped = false;
+    // Cache of the last bounding-shape rectangles applied to the window.
+    // Recomputing alpha_shape_rectangles every frame is cheap, but issuing
+    // the SHAPE round-trip when geometry hasn't changed is not — skip it.
+    let mut last_shape: Vec<Rectangle> = Vec::new();
 
     info!("recording X11 overlay started");
     loop {
+        // Drain the event queue. Redraws are time-driven (the loop below
+        // pushes a frame every `FRAME_MS`), so we don't react to `Expose`
+        // explicitly — we just consume events so the protocol stream
+        // stays well-formed.
         while conn.poll_for_event()?.is_some() {}
 
         renderer.draw_frame();
+        if renderer.disconnected {
+            break;
+        }
         let visible_shape = alpha_shape_rectangles(&renderer.pixmap);
         if visible_shape.is_empty() {
             if mapped {
                 conn.unmap_window(window)?;
                 conn.flush()?;
                 mapped = false;
+                last_shape.clear();
             }
-            std::thread::sleep(Duration::from_millis(FRAME_MS as u64));
+            std::thread::sleep(Duration::from_millis(FRAME_MS));
             continue;
         }
 
-        if shape_supported {
+        if shape_supported && !shape_rectangles_eq(&visible_shape, &last_shape) {
             set_x11_bounding_shape(&conn, window, &visible_shape)?;
+            last_shape.clear();
+            last_shape.extend_from_slice(&visible_shape);
         }
         copy_pixmap_to_x11_zpixmap(&renderer.pixmap, visual, &mut frame);
-        if !mapped {
+        let just_mapped = if !mapped {
             conn.map_window(window)?;
             mapped = true;
-        }
+            true
+        } else {
+            false
+        };
         conn.put_image(
             ImageFormat::Z_PIXMAP,
             window,
@@ -537,13 +560,23 @@ fn run_x11_overlay(
             visual.depth,
             &frame,
         )?;
-        conn.configure_window(
-            window,
-            &ConfigureWindowAux::default().stack_mode(StackMode::ABOVE),
-        )?;
+        // Only re-assert stacking on map — the WM honors the initial
+        // request and re-issuing it every frame is pointless churn.
+        if just_mapped {
+            conn.configure_window(
+                window,
+                &ConfigureWindowAux::default().stack_mode(StackMode::ABOVE),
+            )?;
+        }
         conn.flush()?;
-        std::thread::sleep(Duration::from_millis(FRAME_MS as u64));
+        std::thread::sleep(Duration::from_millis(FRAME_MS));
     }
+
+    if mapped {
+        let _ = conn.unmap_window(window);
+        let _ = conn.flush();
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -713,6 +746,15 @@ fn set_x11_bounding_shape(
     Ok(())
 }
 
+fn shape_rectangles_eq(a: &[Rectangle], b: &[Rectangle]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).all(|(lhs, rhs)| {
+        lhs.x == rhs.x && lhs.y == rhs.y && lhs.width == rhs.width && lhs.height == rhs.height
+    })
+}
+
 fn alpha_shape_rectangles(pixmap: &Pixmap) -> Vec<Rectangle> {
     let width = pixmap.width() as usize;
     let mut rectangles = Vec::new();
@@ -775,6 +817,10 @@ struct OverlayRenderer {
     /// `true` while transitioning into a visible state, `false` while
     /// transitioning out. Determines easing direction and duration.
     spawn_in: bool,
+    /// Set once either input channel returns `Disconnected` — the daemon's
+    /// forwarding task has exited, so the overlay should wind down cleanly
+    /// instead of leaking the thread.
+    disconnected: bool,
     frame: u32,
     /// Smoothed audio level driving bar heights. Advanced toward
     /// `level_target` by a critically-damped spring stepped with the
@@ -827,6 +873,7 @@ impl OverlayRenderer {
             visible_state: State::Idle,
             spawn_started: Instant::now(),
             spawn_in: false,
+            disconnected: false,
             frame: 0,
             level: 0.0,
             level_target: 0.0,
@@ -837,30 +884,47 @@ impl OverlayRenderer {
     }
 
     fn apply_state_updates(&mut self) {
-        while let Ok(state) = self.state_rx.try_recv() {
-            let was_idle = self.target_state == State::Idle;
-            let now_idle = state == State::Idle;
-            self.target_state = state;
+        loop {
+            match self.state_rx.try_recv() {
+                Ok(state) => {
+                    let was_idle = self.target_state == State::Idle;
+                    let now_idle = state == State::Idle;
+                    self.target_state = state;
 
-            if !now_idle {
-                self.visible_state = state;
-            }
+                    if !now_idle {
+                        self.visible_state = state;
+                    }
 
-            // Trigger spawn / despawn only on the boundary between idle and
-            // visible. Recording ↔ Transcribing keeps the pill steady.
-            if was_idle && !now_idle {
-                self.spawn_in = true;
-                self.spawn_started = Instant::now();
-            } else if !was_idle && now_idle {
-                self.spawn_in = false;
-                self.spawn_started = Instant::now();
+                    // Trigger spawn / despawn only on the boundary between
+                    // idle and visible. Recording ↔ Transcribing keeps the
+                    // pill steady.
+                    if was_idle && !now_idle {
+                        self.spawn_in = true;
+                        self.spawn_started = Instant::now();
+                    } else if !was_idle && now_idle {
+                        self.spawn_in = false;
+                        self.spawn_started = Instant::now();
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.disconnected = true;
+                    break;
+                }
             }
         }
         // Drain incoming audio levels — keep only the latest as the
         // spring target. The spring is stepped below using real elapsed
         // `dt`, so it doesn't matter how many samples we drained.
-        while let Ok(new) = self.level_rx.try_recv() {
-            self.level_target = new.clamp(0.0, 1.0);
+        loop {
+            match self.level_rx.try_recv() {
+                Ok(new) => self.level_target = new.clamp(0.0, 1.0),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.disconnected = true;
+                    break;
+                }
+            }
         }
 
         // Critically-damped-ish spring on the displayed level. Stepped
@@ -1003,7 +1067,7 @@ impl Overlay {
         }
         self.layer.commit();
 
-        std::thread::sleep(Duration::from_millis(FRAME_MS as u64));
+        std::thread::sleep(Duration::from_millis(FRAME_MS));
     }
 }
 
@@ -1049,6 +1113,12 @@ fn copy_pixmap_to_x11_zpixmap(pixmap: &Pixmap, visual: X11ArgbVisual, canvas: &m
     }
 }
 
+/// Pack an 8-bit channel `value` into the bits described by `mask`, scaling
+/// it from `[0, 255]` into `[0, mask_max]`. The `(value * max + 127) / 255`
+/// form is the textbook integer rescale: adding `127` before dividing by
+/// `255` performs round-half-up so the brightest input (`0xFF`) always
+/// produces the brightest output, and intermediate values are nearest-
+/// rounded instead of truncated toward zero.
 fn pack_masked_channel(value: u8, mask: u32) -> u32 {
     if mask == 0 {
         return 0;
