@@ -11,7 +11,7 @@ members = [
 
 [package]
 name = "whisrs"
-version = "0.1.14"
+version = "0.1.15"
 edition = "2021"
 description = "Linux-first voice-to-text dictation tool with Groq, OpenAI, and local Whisper backends"
 license = "MIT"
