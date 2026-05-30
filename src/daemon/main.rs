@@ -1077,12 +1077,16 @@ async fn run_streaming_pipeline(
             }
 
             // Add space separator between turns if needed.
-            let text_to_type = if full_text.is_empty() {
+            // Don't insert a space before punctuation streaming deltas,
+            // as they arrive as bare tokens.
+            let text_to_type = if full_text.is_empty()
+                || batch.starts_with(' ')
+                || full_text.ends_with(' ')
+                || leads_with_punct(&batch)
+            {
                 batch.clone()
-            } else if !batch.starts_with(' ') && !full_text.ends_with(' ') {
-                format!(" {batch}")
             } else {
-                batch.clone()
+                format!(" {batch}")
             };
 
             full_text.push_str(&text_to_type);
@@ -2073,6 +2077,12 @@ const TERMINAL_CLASSES: &[&str] = &[
 fn is_terminal_class(class: &str) -> bool {
     let lower = class.to_lowercase();
     TERMINAL_CLASSES.iter().any(|t| lower.contains(t))
+}
+
+/// Returns `true` when the first character of `text` is an ASCII punctuation
+/// mark that should not have a space inserted before it.
+fn leads_with_punct(text: &str) -> bool {
+    text.starts_with(['.', ',', '!', '?', ';', ':', ')', ']', '}'])
 }
 
 async fn handle_cancel(
