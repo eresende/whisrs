@@ -3347,6 +3347,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wayland-protocols-misc"
+version = "0.3.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e9567599ef23e09b8dad6e429e5738d4509dfc46b3b21f32841a304d16b29c8"
+dependencies = [
+ "bitflags 2.11.0",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-scanner",
+]
+
+[[package]]
 name = "wayland-protocols-wlr"
 version = "0.3.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3944,8 +3957,12 @@ dependencies = [
  "arboard",
  "evdev",
  "log",
+ "rustix 0.38.44",
  "serde_json",
  "thiserror 2.0.18",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-misc",
  "xkbcommon 0.8.0",
 ]
 

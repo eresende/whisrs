@@ -32,6 +32,8 @@
 pub mod clipboard;
 pub mod keyboard;
 pub mod keymap;
+#[cfg(feature = "wayland-vk")]
+pub mod wayland_vk;
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -56,6 +58,51 @@ pub struct KeyTap {
 pub struct KeyMapping {
     pub main: KeyTap,
     pub follow: Option<KeyTap>,
+}
+
+// ---------------------------------------------------------------------------
+// KeyInjector trait
+// ---------------------------------------------------------------------------
+
+/// High-level text-injection abstraction.
+///
+/// This unifies the available keystroke backends behind a single trait so a
+/// caller can pick an implementation at runtime (e.g. the layout-independent
+/// Wayland [`wayland_vk::WaylandVkKeyboard`] when the compositor supports
+/// `zwp_virtual_keyboard_v1`, falling back to the uinput [`Keyboard`]
+/// otherwise) without changing the typing code.
+///
+/// The semantics mirror [`Keyboard`]'s inherent methods.
+pub trait KeyInjector: Send {
+    /// Type `text` by injecting the corresponding keystrokes.
+    fn type_text(&mut self, text: &str) -> anyhow::Result<()>;
+
+    /// Emit Backspace `count` times.
+    fn backspace(&mut self, count: usize) -> anyhow::Result<()>;
+
+    /// Press all keys in `keys`, then release them in reverse order.
+    fn send_combo(&mut self, keys: &[evdev::Key]) -> anyhow::Result<()>;
+
+    /// Set the inter-event delay used between injected key events.
+    fn set_key_delay(&mut self, delay: std::time::Duration);
+}
+
+impl KeyInjector for Keyboard {
+    fn type_text(&mut self, text: &str) -> anyhow::Result<()> {
+        Keyboard::type_text(self, text)
+    }
+
+    fn backspace(&mut self, count: usize) -> anyhow::Result<()> {
+        Keyboard::backspace(self, count)
+    }
+
+    fn send_combo(&mut self, keys: &[evdev::Key]) -> anyhow::Result<()> {
+        Keyboard::send_combo(self, keys)
+    }
+
+    fn set_key_delay(&mut self, delay: std::time::Duration) {
+        Keyboard::set_key_delay(self, delay)
+    }
 }
 
 // ---------------------------------------------------------------------------

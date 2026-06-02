@@ -25,9 +25,11 @@ use whisrs::transcription::openai_realtime::OpenAIRealtimeBackend;
 use whisrs::transcription::openai_rest::OpenAIRestBackend;
 use whisrs::transcription::{TranscriptionBackend, TranscriptionConfig};
 use whisrs::window::{self, WindowTracker};
-use whisrs::{encode_message, read_message, socket_path, Command, Config, Response, State};
+use whisrs::{
+    encode_message, read_message, socket_path, Command, Config, InjectorBackend, Response, State,
+};
 
-static KEYBOARD: OnceLock<StdMutex<Option<xkb_type::Keyboard>>> = OnceLock::new();
+static KEYBOARD: OnceLock<StdMutex<Option<Box<dyn xkb_type::KeyInjector>>>> = OnceLock::new();
 
 /// Context saved when command mode starts recording.
 struct CommandModeContext {
@@ -586,7 +588,10 @@ async fn main() -> Result<()> {
     // Wait for compositor environment on boot (WAYLAND_DISPLAY, etc.).
     // Must run before window tracker detection and any clipboard operations.
     import_compositor_env().await;
-    warm_keyboard(std::time::Duration::from_millis(config.input.key_delay_ms));
+    warm_keyboard(
+        std::time::Duration::from_millis(config.input.key_delay_ms),
+        config.input.backend,
+    );
 
     let window_tracker: Arc<dyn WindowTracker> = Arc::from(window::detect_tracker());
     info!(
@@ -817,6 +822,7 @@ async fn handle_toggle(
                 let pipeline_state_tx = context.state_tx.clone();
                 let pipeline_key_delay =
                     std::time::Duration::from_millis(context.config.input.key_delay_ms);
+                let pipeline_injector_backend = context.config.input.backend;
 
                 let task = tokio::spawn(async move {
                     run_streaming_pipeline(
@@ -837,6 +843,7 @@ async fn handle_toggle(
                         pipeline_language,
                         pipeline_state_tx,
                         pipeline_key_delay,
+                        pipeline_injector_backend,
                     )
                     .await
                 });
@@ -1003,6 +1010,7 @@ async fn run_streaming_pipeline(
     language: String,
     state_tx: tokio::sync::watch::Sender<State>,
     key_delay: std::time::Duration,
+    injector_backend: InjectorBackend,
 ) -> Result<String> {
     // State-progress toasts are noise when the overlay is on.
     let notify_state = notify && !overlay_enabled;
@@ -1092,8 +1100,10 @@ async fn run_streaming_pipeline(
             full_text.push_str(&text_to_type);
 
             info!("typing: {:?}", text_to_type);
-            match tokio::task::spawn_blocking(move || type_text_at_cursor(&text_to_type, key_delay))
-                .await
+            match tokio::task::spawn_blocking(move || {
+                type_text_at_cursor(&text_to_type, key_delay, injector_backend)
+            })
+            .await
             {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => warn!("failed to type text: {e:#}",),
@@ -1349,7 +1359,12 @@ async fn process_recording_batch(
     // Type the text at the cursor.
     let text_clone = text.clone();
     let key_delay = std::time::Duration::from_millis(context.config.input.key_delay_ms);
-    match tokio::task::spawn_blocking(move || type_text_at_cursor(&text_clone, key_delay)).await {
+    let injector_backend = context.config.input.backend;
+    match tokio::task::spawn_blocking(move || {
+        type_text_at_cursor(&text_clone, key_delay, injector_backend)
+    })
+    .await
+    {
         Ok(Ok(())) => {}
         Ok(Err(e)) => warn!("failed to type text: {e:#}"),
         Err(e) => warn!("failed to join typing task: {e}"),
@@ -1399,7 +1414,11 @@ fn format_api_error(err: &anyhow::Error) -> String {
 }
 
 /// Type text at the cursor using uinput (keyboard injection) or clipboard paste.
-fn type_text_at_cursor(text: &str, key_delay: std::time::Duration) -> Result<()> {
+fn type_text_at_cursor(
+    text: &str,
+    key_delay: std::time::Duration,
+    backend: InjectorBackend,
+) -> Result<()> {
     let keyboard_slot = KEYBOARD.get_or_init(|| StdMutex::new(None));
     let mut keyboard_guard = keyboard_slot
         .lock()
@@ -1410,7 +1429,9 @@ fn type_text_at_cursor(text: &str, key_delay: std::time::Duration) -> Result<()>
         // `warm_keyboard` is what gives X11 time to attach its keymap;
         // we don't want every error-recovery to stall the user's typing
         // path for 1s.
-        *keyboard_guard = Some(new_keyboard(key_delay, /* prewarm = */ false)?);
+        *keyboard_guard = Some(new_keyboard(
+            key_delay, /* prewarm = */ false, backend,
+        )?);
     }
 
     let keyboard = keyboard_guard
@@ -1426,7 +1447,7 @@ fn type_text_at_cursor(text: &str, key_delay: std::time::Duration) -> Result<()>
     Ok(())
 }
 
-fn warm_keyboard(key_delay: std::time::Duration) {
+fn warm_keyboard(key_delay: std::time::Duration, backend: InjectorBackend) {
     let keyboard_slot = KEYBOARD.get_or_init(|| StdMutex::new(None));
     let Ok(mut keyboard_guard) = keyboard_slot.lock() else {
         warn!("failed to initialize virtual keyboard: keyboard mutex poisoned");
@@ -1439,7 +1460,7 @@ fn warm_keyboard(key_delay: std::time::Duration) {
 
     // Startup path: long settle delay so X11 has time to process
     // MappingNotify and attach the device keymap before the first key.
-    match new_keyboard(key_delay, /* prewarm = */ true) {
+    match new_keyboard(key_delay, /* prewarm = */ true, backend) {
         Ok(kb) => {
             *keyboard_guard = Some(kb);
             info!("virtual keyboard initialized");
@@ -1450,14 +1471,20 @@ fn warm_keyboard(key_delay: std::time::Duration) {
     }
 }
 
-fn new_keyboard(key_delay: std::time::Duration, prewarm: bool) -> Result<xkb_type::Keyboard> {
+/// Build the uinput (evdev) keyboard, mapping the common permission failure
+/// to an actionable message. `prewarm` adds a settle delay so X11 attaches
+/// the device keymap before the first keystroke.
+fn new_uinput_keyboard(
+    key_delay: std::time::Duration,
+    prewarm: bool,
+) -> Result<Box<dyn xkb_type::KeyInjector>> {
     let result = if prewarm {
         xkb_type::Keyboard::new_prewarm(key_delay)
     } else {
         xkb_type::Keyboard::new(key_delay)
     };
     match result {
-        Ok(kb) => Ok(kb),
+        Ok(kb) => Ok(Box::new(kb)),
         Err(e) => {
             let msg = format!("{e:#}");
             if msg.contains("Permission denied") || msg.contains("permission") {
@@ -1467,6 +1494,43 @@ fn new_keyboard(key_delay: std::time::Duration, prewarm: bool) -> Result<xkb_typ
                 );
             }
             Err(e.context("failed to create virtual keyboard"))
+        }
+    }
+}
+
+/// Construct the configured keyboard-injection backend.
+///
+/// `Auto` prefers the layout-independent Wayland virtual keyboard when a
+/// Wayland session is detected, falling back to uinput when the compositor
+/// lacks `zwp_virtual_keyboard_v1`. `prewarm` only affects the uinput path
+/// (the Wayland backend ships its own keymap, so no settle delay is needed).
+fn new_keyboard(
+    key_delay: std::time::Duration,
+    prewarm: bool,
+    backend: InjectorBackend,
+) -> Result<Box<dyn xkb_type::KeyInjector>> {
+    match backend {
+        InjectorBackend::Uinput => new_uinput_keyboard(key_delay, prewarm),
+        InjectorBackend::WaylandVk => {
+            let kb = xkb_type::wayland_vk::WaylandVkKeyboard::new(key_delay)?;
+            info!("using wayland virtual-keyboard injection backend");
+            Ok(Box::new(kb))
+        }
+        InjectorBackend::Auto => {
+            if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                match xkb_type::wayland_vk::WaylandVkKeyboard::new(key_delay) {
+                    Ok(kb) => {
+                        info!("using wayland virtual-keyboard injection backend");
+                        return Ok(Box::new(kb));
+                    }
+                    Err(e) => {
+                        warn!(
+                            "wayland virtual-keyboard unavailable, falling back to uinput: {e:#}"
+                        );
+                    }
+                }
+            }
+            new_uinput_keyboard(key_delay, prewarm)
         }
     }
 }
