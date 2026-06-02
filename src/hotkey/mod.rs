@@ -76,6 +76,19 @@ pub async fn start_hotkey_listener(config: &HotkeyConfig, cmd_tx: mpsc::Sender<C
         }
     }
 
+    if let Some(ref s) = config.speak {
+        match parse_hotkey(s) {
+            Ok(binding) => {
+                info!("hotkey: speak = {s}");
+                actions.push(HotkeyAction {
+                    binding,
+                    command: Command::Speak,
+                });
+            }
+            Err(e) => warn!("invalid speak hotkey '{s}': {e}"),
+        }
+    }
+
     if actions.is_empty() {
         debug!("no hotkeys configured");
         return;

@@ -9,6 +9,7 @@ pub mod overlay;
 pub mod state;
 pub mod transcription;
 pub mod tray;
+pub mod tts;
 pub mod window;
 
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,10 @@ pub enum Command {
     /// Start command mode: copy selection → record voice instruction → LLM rewrite → paste.
     #[serde(rename = "command")]
     CommandMode,
+    /// Read the selected text aloud via TTS. A repeat `Speak` (or `Cancel`)
+    /// stops any in-progress playback.
+    #[serde(alias = "read")]
+    Speak,
 }
 
 fn default_log_limit() -> usize {
@@ -100,6 +105,9 @@ pub struct Config {
     /// LLM configuration for command mode (text rewriting).
     #[serde(default)]
     pub llm: Option<llm::LlmConfig>,
+    /// Text-to-speech configuration for read-selection-aloud.
+    #[serde(default)]
+    pub tts: Option<TtsConfig>,
     /// Global hotkey configuration.
     #[serde(default)]
     pub hotkeys: Option<HotkeyConfig>,
@@ -117,6 +125,9 @@ pub struct HotkeyConfig {
     pub cancel: Option<String>,
     /// Hotkey to start command mode (e.g. "Super+Shift+C").
     pub command: Option<String>,
+    /// Hotkey to read the selected text aloud (e.g. "Super+Shift+R").
+    #[serde(alias = "read")]
+    pub speak: Option<String>,
 }
 
 /// Visual configuration for the bottom recording overlay.
@@ -325,6 +336,42 @@ pub struct OpenAiConfig {
     pub model: String,
 }
 
+/// Text-to-speech configuration for the read-selection-aloud feature.
+///
+/// Opt-in (`enabled` defaults to `false`). v1 uses the Groq TTS endpoint;
+/// when `api_key` is absent the daemon falls back to the `[groq]` api_key /
+/// `WHISRS_GROQ_API_KEY` env var (TTS runs on the same Groq account).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TtsConfig {
+    /// Whether read-selection-aloud is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// TTS model identifier (backend-specific).
+    #[serde(default = "default_tts_model")]
+    pub model: String,
+    /// Voice name.
+    #[serde(default = "default_tts_voice")]
+    pub voice: String,
+    /// Audio response format requested from the API (we decode WAV).
+    #[serde(default = "default_tts_response_format")]
+    pub response_format: String,
+    /// Optional dedicated API key; falls back to the Groq key when absent.
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl Default for TtsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: default_tts_model(),
+            voice: default_tts_voice(),
+            response_format: default_tts_response_format(),
+            api_key: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalWhisperConfig {
     pub model_path: String,
@@ -377,6 +424,15 @@ fn default_groq_model() -> String {
 }
 fn default_openai_model() -> String {
     "gpt-4o-mini-transcribe".to_string()
+}
+fn default_tts_model() -> String {
+    "canopylabs/orpheus-v1-english".to_string()
+}
+fn default_tts_voice() -> String {
+    "autumn".to_string()
+}
+fn default_tts_response_format() -> String {
+    "wav".to_string()
 }
 fn default_asr_sidecar_url() -> String {
     "http://127.0.0.1:8765/transcribe".to_string()
@@ -759,6 +815,93 @@ mod tests {
     }
 
     #[test]
+    fn speak_command_serializes_lowercase() {
+        let cmd = Command::Speak;
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(json, r#"{"cmd":"speak"}"#);
+    }
+
+    #[test]
+    fn speak_command_roundtrip() {
+        let parsed: Command = serde_json::from_str(r#"{"cmd":"speak"}"#).unwrap();
+        assert!(matches!(parsed, Command::Speak));
+    }
+
+    #[test]
+    fn speak_command_read_alias() {
+        let parsed: Command = serde_json::from_str(r#"{"cmd":"read"}"#).unwrap();
+        assert!(matches!(parsed, Command::Speak));
+    }
+
+    #[test]
+    fn config_tts_section_roundtrip() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            backend = "groq"
+
+            [tts]
+            enabled = true
+            model = "canopylabs/orpheus-v1-english"
+            voice = "autumn"
+            response_format = "wav"
+            "#,
+        )
+        .unwrap();
+
+        let tts = config.tts.as_ref().expect("tts section parsed");
+        assert!(tts.enabled);
+        assert_eq!(tts.model, "canopylabs/orpheus-v1-english");
+        assert_eq!(tts.voice, "autumn");
+        assert_eq!(tts.response_format, "wav");
+        assert!(tts.api_key.is_none());
+
+        // Round-trips back out and parses again identically.
+        let serialized = toml::to_string(&config).unwrap();
+        let reparsed: Config = toml::from_str(&serialized).unwrap();
+        assert!(reparsed.tts.unwrap().enabled);
+    }
+
+    #[test]
+    fn config_tts_defaults_when_minimal() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            backend = "groq"
+
+            [tts]
+            enabled = true
+            "#,
+        )
+        .unwrap();
+
+        let tts = config.tts.unwrap();
+        assert!(tts.enabled);
+        // Defaults applied for omitted fields.
+        assert_eq!(tts.model, "canopylabs/orpheus-v1-english");
+        assert_eq!(tts.voice, "autumn");
+        assert_eq!(tts.response_format, "wav");
+    }
+
+    #[test]
+    fn config_without_tts_is_none() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            backend = "groq"
+            "#,
+        )
+        .unwrap();
+        assert!(config.tts.is_none());
+    }
+
+    #[test]
+    fn hotkey_speak_read_alias() {
+        let hotkeys: HotkeyConfig = toml::from_str(r#"read = "Super+Shift+R""#).unwrap();
+        assert_eq!(hotkeys.speak.as_deref(), Some("Super+Shift+R"));
+    }
+
+    #[test]
     fn response_json_format() {
         let resp = Response::Ok { state: State::Idle };
         let json = serde_json::to_string(&resp).unwrap();
@@ -869,6 +1012,7 @@ mod tests {
             local_parakeet: None,
             asr_sidecar: None,
             llm: None,
+            tts: None,
             hotkeys: None,
             overlay: None,
         };
@@ -911,6 +1055,7 @@ mod tests {
             local_parakeet: None,
             asr_sidecar: None,
             llm: None,
+            tts: None,
             hotkeys: None,
             overlay: None,
         };
@@ -938,6 +1083,7 @@ mod tests {
             local_parakeet: None,
             asr_sidecar: None,
             llm: None,
+            tts: None,
             hotkeys: None,
             overlay: None,
         };
@@ -982,6 +1128,7 @@ mod tests {
                 model: "microsoft/VibeVoice-ASR-HF".to_string(),
             }),
             llm: None,
+            tts: None,
             hotkeys: None,
             overlay: None,
         };
@@ -1028,6 +1175,7 @@ mod tests {
             local_parakeet: None,
             asr_sidecar: None,
             llm: None,
+            tts: None,
             hotkeys: None,
             overlay: None,
         };

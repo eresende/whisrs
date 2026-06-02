@@ -118,6 +118,7 @@ fn default_config() -> Config {
         local_parakeet: None,
         asr_sidecar: None,
         llm: None,
+        tts: None,
         hotkeys: None,
         overlay: None,
     }

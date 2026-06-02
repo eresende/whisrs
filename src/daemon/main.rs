@@ -50,6 +50,13 @@ struct DaemonState {
     recording_started_at: Option<std::time::Instant>,
     /// Active command mode context (set when command mode is recording).
     command_mode: Option<CommandModeContext>,
+    /// Stop flag for in-progress TTS playback (read-selection-aloud).
+    ///
+    /// Set when a `Speak` synthesis succeeds and playback begins; cleared when
+    /// playback finishes. `Cancel` and a repeat `Speak` both flip it to `true`
+    /// to interrupt playback. Read-aloud runs independently of the recording
+    /// state machine, so there is no dedicated `State` variant.
+    tts_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl DaemonState {
@@ -61,6 +68,7 @@ impl DaemonState {
             streaming_task: None,
             recording_started_at: None,
             command_mode: None,
+            tts_stop: None,
         }
     }
 }
@@ -146,6 +154,7 @@ fn load_config() -> (Config, Option<String>) {
                             local_parakeet: None,
                             asr_sidecar: None,
                             llm: None,
+                            tts: None,
                             hotkeys: None,
                             overlay: None,
                         },
@@ -172,6 +181,7 @@ fn load_config() -> (Config, Option<String>) {
                         local_parakeet: None,
                         asr_sidecar: None,
                         llm: None,
+                        tts: None,
                         hotkeys: None,
                         overlay: None,
                     },
@@ -198,6 +208,7 @@ fn load_config() -> (Config, Option<String>) {
             local_parakeet: None,
             asr_sidecar: None,
             llm: None,
+            tts: None,
             hotkeys: None,
             overlay: None,
         },
@@ -366,6 +377,17 @@ fn resolve_groq_api_key(config: &Config) -> Option<String> {
         }
     }
     config.groq.as_ref().map(|g| g.api_key.clone())
+}
+
+/// Resolve the API key used for TTS: the dedicated `[tts] api_key` when set,
+/// otherwise the Groq key (`[groq] api_key` / `WHISRS_GROQ_API_KEY`).
+fn resolve_tts_api_key(config: &Config) -> Option<String> {
+    if let Some(tts) = &config.tts {
+        if let Some(key) = tts.api_key.as_ref().filter(|k| !k.is_empty()) {
+            return Some(key.clone());
+        }
+    }
+    resolve_groq_api_key(config)
 }
 
 fn resolve_openai_api_key(config: &Config) -> Option<String> {
@@ -739,6 +761,7 @@ async fn handle_command(
             },
         },
         Command::CommandMode => handle_command_mode(daemon_state, context).await,
+        Command::Speak => handle_speak(daemon_state, context).await,
     }
 }
 
@@ -2096,11 +2119,180 @@ fn leads_with_punct(text: &str) -> bool {
     ])
 }
 
+/// Read the selected text aloud via TTS.
+///
+/// Mirrors `command_mode_start`'s selection-capture path (primary selection +
+/// simulated copy fallback + clipboard read), then synthesizes speech via the
+/// configured TTS backend and plays it on the default output device. Playback
+/// is interruptible: a repeat `Speak` (or a `Cancel`) sets the shared stop flag
+/// to halt it. Runs independently of the recording state machine.
+async fn handle_speak(
+    daemon_state: Arc<Mutex<DaemonState>>,
+    context: Arc<DaemonContext>,
+) -> Response {
+    // Toggle behavior: if playback is already in progress, a second press stops
+    // it (and does not start a new synthesis).
+    {
+        let mut ds = daemon_state.lock().await;
+        if let Some(stop) = ds.tts_stop.take() {
+            stop.store(true, std::sync::atomic::Ordering::Release);
+            info!("speak: stopped in-progress playback");
+            return Response::Ok {
+                state: ds.state_machine.state(),
+            };
+        }
+    }
+
+    // Verify TTS is configured and enabled.
+    let tts_config = match &context.config.tts {
+        Some(t) if t.enabled => t.clone(),
+        Some(_) => {
+            return Response::Error {
+                message: "TTS is disabled — set [tts] enabled = true in config.toml".to_string(),
+            };
+        }
+        None => {
+            return Response::Error {
+                message: "TTS is not configured — add a [tts] section to config.toml".to_string(),
+            };
+        }
+    };
+
+    let api_key = resolve_tts_api_key(&context.config);
+    let backend = match whisrs::tts::create_backend(&tts_config, api_key) {
+        Ok(b) => b,
+        Err(e) => {
+            return Response::Error {
+                message: e.to_string(),
+            };
+        }
+    };
+
+    // Capture the selected text (same approach as command mode).
+    info!("speak: getting selected text");
+    let clipboard = xkb_type::default_clipboard();
+    let saved_clipboard = clipboard.get_text().unwrap_or_default();
+
+    let is_terminal = context
+        .window_tracker
+        .get_focused_window_class()
+        .map(|c| is_terminal_class(&c))
+        .unwrap_or(false);
+
+    let selected_text = clipboard.get_primary_selection().unwrap_or_default();
+
+    let copy_fn = if is_terminal {
+        simulate_terminal_copy
+    } else {
+        simulate_copy
+    };
+
+    match tokio::task::spawn_blocking(copy_fn).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            if selected_text.is_empty() {
+                return Response::Error {
+                    message: format!("failed to copy selection: {e}"),
+                };
+            }
+            warn!("copy simulation failed ({e}), using primary selection text");
+        }
+        Err(e) => {
+            if selected_text.is_empty() {
+                return Response::Error {
+                    message: format!("copy task panicked: {e}"),
+                };
+            }
+            warn!("copy task panicked ({e}), using primary selection text");
+        }
+    }
+
+    let selected_text = if selected_text.is_empty() {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        match clipboard.get_text() {
+            Ok(text) => text,
+            Err(e) => {
+                return Response::Error {
+                    message: format!("failed to read clipboard: {e}"),
+                };
+            }
+        }
+    } else {
+        selected_text
+    };
+
+    if selected_text.is_empty() || selected_text == saved_clipboard {
+        return Response::Error {
+            message: "no text selected — select text before using read-aloud".to_string(),
+        };
+    }
+
+    info!("speak: synthesizing {} chars", selected_text.len());
+    if context.notify_state() {
+        send_notification("whisrs", "Reading selection aloud...");
+    }
+
+    // Synthesize speech.
+    let wav_bytes = match backend.synthesize(&selected_text).await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            error!("speak: synthesis failed: {e}");
+            if context.notify_error() {
+                send_notification("whisrs", &format!("Read-aloud failed: {e}"));
+            }
+            return Response::Error {
+                message: format!("TTS synthesis failed: {e}"),
+            };
+        }
+    };
+
+    // Store a fresh stop flag and spawn interruptible playback.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let mut ds = daemon_state.lock().await;
+        ds.tts_stop = Some(Arc::clone(&stop));
+    }
+
+    let ds_ref = Arc::clone(&daemon_state);
+    let playback_stop = Arc::clone(&stop);
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            whisrs::audio::playback::play_wav(&wav_bytes, stop)
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => debug!("speak: playback finished"),
+            Ok(Err(e)) => warn!("speak: playback failed: {e}"),
+            Err(e) => warn!("speak: playback task panicked: {e}"),
+        }
+        // Clear the stop flag from daemon state if it is still ours (i.e. a new
+        // Speak hasn't replaced it).
+        let mut ds = ds_ref.lock().await;
+        if let Some(current) = &ds.tts_stop {
+            if Arc::ptr_eq(current, &playback_stop) {
+                ds.tts_stop = None;
+            }
+        }
+    });
+
+    let state = daemon_state.lock().await.state_machine.state();
+    Response::Ok { state }
+}
+
 async fn handle_cancel(
     daemon_state: Arc<Mutex<DaemonState>>,
     context: Arc<DaemonContext>,
 ) -> Response {
     let mut ds = daemon_state.lock().await;
+
+    // Stop any in-progress TTS playback regardless of recording state.
+    let stopped_tts = if let Some(stop) = ds.tts_stop.take() {
+        stop.store(true, std::sync::atomic::Ordering::Release);
+        info!("cancel: stopped TTS playback");
+        true
+    } else {
+        false
+    };
 
     match ds.state_machine.transition(Action::Cancel) {
         Ok(new_state) => {
@@ -2121,6 +2313,12 @@ async fn handle_cancel(
             }
             Response::Ok { state: new_state }
         }
+        // Nothing was recording. If we still interrupted TTS playback, that's a
+        // successful cancel — report the current (Idle) state rather than the
+        // invalid-transition error.
+        Err(_) if stopped_tts => Response::Ok {
+            state: ds.state_machine.state(),
+        },
         Err(e) => Response::Error {
             message: e.to_string(),
         },

@@ -64,6 +64,9 @@ enum SubCmd {
     },
     /// Command mode: select text, speak an instruction, LLM rewrites it in place
     Command,
+    /// Read the selected text aloud via TTS (press again to stop playback)
+    #[command(alias = "read")]
+    Speak,
     /// Restart the whisrs daemon (uses the systemd user service when present)
     Restart,
 }
@@ -130,6 +133,9 @@ async fn main() -> anyhow::Result<()> {
         }
         SubCmd::Command => {
             send_command(Command::CommandMode).await?;
+        }
+        SubCmd::Speak => {
+            send_command(Command::Speak).await?;
         }
         SubCmd::Restart => {
             cmd_restart()?;

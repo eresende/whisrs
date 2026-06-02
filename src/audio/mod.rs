@@ -2,6 +2,7 @@
 
 pub mod capture;
 pub mod feedback;
+pub mod playback;
 pub mod recovery;
 
 /// A chunk of 16-bit PCM audio samples.

@@ -150,6 +150,7 @@ pub fn run_setup() -> Result<()> {
         local_parakeet: None,
         asr_sidecar: asr_sidecar_config,
         llm: llm_config,
+        tts: None,
         hotkeys: None,
         overlay: if overlay { overlay_config } else { None },
     };
