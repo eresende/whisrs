@@ -278,6 +278,28 @@ pub struct AudioConfig {
     pub device: String,
 }
 
+/// Selects which keyboard-injection backend the daemon uses to type text.
+///
+/// On Wayland, the evdev/uinput backend emits raw keycodes that the
+/// compositor reinterprets through the *active* XKB layout, so dictating
+/// text that mixes scripts (e.g. Latin + Arabic, or any code-switching
+/// between two keyboard layouts) gets garbled — characters absent from the
+/// active layout cannot be produced. The Wayland virtual-keyboard backend
+/// (`zwp_virtual_keyboard_v1`) ships its own keymap and types
+/// layout-independently, fixing that class of bugs (see issue #44).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum InjectorBackend {
+    /// Use the Wayland virtual keyboard when the compositor supports
+    /// `zwp_virtual_keyboard_v1`, otherwise fall back to evdev/uinput.
+    #[default]
+    Auto,
+    /// Force the evdev/uinput backend (layout-dependent on Wayland).
+    Uinput,
+    /// Force `zwp_virtual_keyboard_v1` (errors at startup if unsupported).
+    WaylandVk,
+}
+
 /// Keyboard injection (uinput) tuning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputConfig {
@@ -286,12 +308,20 @@ pub struct InputConfig {
     /// Node/Ink-based apps like Claude Code).
     #[serde(default = "default_key_delay_ms")]
     pub key_delay_ms: u64,
+    /// Keyboard-injection backend. `auto` (the recommended default) prefers
+    /// the Wayland virtual keyboard when available and otherwise falls back
+    /// to uinput. Set this to `wayland-vk` to fix garbled bilingual /
+    /// code-switching dictation on Wayland (issue #44), where the uinput
+    /// backend can only emit characters present in the active XKB layout.
+    #[serde(default)]
+    pub backend: InjectorBackend,
 }
 
 impl Default for InputConfig {
     fn default() -> Self {
         Self {
             key_delay_ms: default_key_delay_ms(),
+            backend: InjectorBackend::default(),
         }
     }
 }
@@ -850,6 +880,67 @@ mod tests {
         // Cleanup.
         let _ = std::fs::remove_file(&sock_path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn injector_backend_toml_roundtrip() {
+        // Each variant serializes to its kebab-case string and parses back.
+        for (variant, name) in [
+            (InjectorBackend::Auto, "auto"),
+            (InjectorBackend::Uinput, "uinput"),
+            (InjectorBackend::WaylandVk, "wayland-vk"),
+        ] {
+            #[derive(Serialize, Deserialize)]
+            struct Wrap {
+                backend: InjectorBackend,
+            }
+            let toml_str = toml::to_string(&Wrap { backend: variant }).unwrap();
+            assert_eq!(toml_str.trim(), format!("backend = \"{name}\""));
+            let parsed: Wrap = toml::from_str(&format!("backend = \"{name}\"")).unwrap();
+            assert_eq!(parsed.backend, variant);
+        }
+    }
+
+    #[test]
+    fn input_config_backend_defaults_to_auto_when_absent() {
+        // An [input] table without a `backend` key must default to Auto
+        // (back-compat for configs written before the field existed).
+        let input: InputConfig = toml::from_str(
+            r#"
+            key_delay_ms = 5
+            "#,
+        )
+        .unwrap();
+        assert_eq!(input.backend, InjectorBackend::Auto);
+
+        // And an explicit value is honoured.
+        let input: InputConfig = toml::from_str(
+            r#"
+            backend = "wayland-vk"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(input.backend, InjectorBackend::WaylandVk);
+    }
+
+    #[test]
+    fn config_input_backend_back_compat() {
+        // A full config whose [input] table omits `backend` parses with the
+        // Auto default.
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            backend = "local-whisper"
+
+            [audio]
+            device = "default"
+
+            [input]
+            key_delay_ms = 8
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.input.backend, InjectorBackend::Auto);
     }
 
     #[test]

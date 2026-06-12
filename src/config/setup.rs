@@ -13,8 +13,8 @@ use dialoguer::{Confirm, Input, Password, Select};
 
 use crate::llm::LlmConfig;
 use crate::{
-    AsrSidecarConfig, AudioConfig, Config, DeepgramConfig, GeneralConfig, GroqConfig, InputConfig,
-    LocalWhisperConfig, OpenAiConfig,
+    AsrSidecarConfig, AudioConfig, Config, DeepgramConfig, GeneralConfig, GroqConfig,
+    InjectorBackend, InputConfig, LocalWhisperConfig, OpenAiConfig,
 };
 
 // ANSI color codes.
@@ -119,6 +119,9 @@ pub fn run_setup() -> Result<()> {
     // 5b. Bottom recording overlay.
     let (overlay, overlay_config) = configure_overlay();
 
+    // 5c. Keyboard-injection backend.
+    let injector_backend = select_injector_backend(None)?;
+
     // 6. Command mode LLM (optional).
     let llm_config = configure_llm()?;
 
@@ -141,7 +144,10 @@ pub fn run_setup() -> Result<()> {
         audio: AudioConfig {
             device: "default".to_string(),
         },
-        input: InputConfig::default(),
+        input: InputConfig {
+            backend: injector_backend,
+            ..InputConfig::default()
+        },
         deepgram: deepgram_config,
         groq: groq_config,
         openai: openai_config,
@@ -210,6 +216,41 @@ pub(crate) fn select_backend(existing: Option<&Config>) -> Result<String> {
 
     println!("  {DIM}Selected: {backend}{RESET}");
     Ok(backend)
+}
+
+/// Prompt the user to select the keyboard-injection backend.
+///
+/// `auto` is recommended: it uses the Wayland virtual keyboard when the
+/// compositor supports `zwp_virtual_keyboard_v1` and otherwise falls back to
+/// uinput. The Wayland backend types layout-independently, which fixes
+/// garbled bilingual / code-switching dictation on Wayland (issue #44).
+pub(crate) fn select_injector_backend(existing: Option<&Config>) -> Result<InjectorBackend> {
+    const BACKENDS: &[InjectorBackend] = &[
+        InjectorBackend::Auto,
+        InjectorBackend::Uinput,
+        InjectorBackend::WaylandVk,
+    ];
+    let default_idx = existing
+        .map(|cfg| match cfg.input.backend {
+            InjectorBackend::Auto => 0,
+            InjectorBackend::Uinput => 1,
+            InjectorBackend::WaylandVk => 2,
+        })
+        .unwrap_or(0);
+
+    println!();
+    let selection = Select::new()
+        .with_prompt("Select a keyboard-injection backend")
+        .items(&[
+            "Auto        (recommended — Wayland virtual keyboard, falls back to uinput)",
+            "uinput      (evdev/uinput; layout-dependent on Wayland)",
+            "wayland-vk  (force zwp_virtual_keyboard_v1 — fixes bilingual typing on Wayland)",
+        ])
+        .default(default_idx)
+        .interact()
+        .context("failed to read injection backend selection")?;
+
+    Ok(BACKENDS[selection])
 }
 
 /// Sub-menu for choosing a local transcription engine.
