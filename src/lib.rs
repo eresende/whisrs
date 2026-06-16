@@ -9,6 +9,7 @@ pub mod overlay;
 pub mod state;
 pub mod transcription;
 pub mod tray;
+pub mod tts;
 pub mod window;
 
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,10 @@ pub enum Command {
     /// Start command mode: copy selection → record voice instruction → LLM rewrite → paste.
     #[serde(rename = "command")]
     CommandMode,
+    /// Read the selected text aloud via TTS. A repeat `Speak` (or `Cancel`)
+    /// stops any in-progress playback.
+    #[serde(alias = "read")]
+    Speak,
 }
 
 fn default_log_limit() -> usize {
@@ -58,6 +63,10 @@ pub enum State {
     Idle,
     Recording,
     Transcribing,
+    /// Read-aloud: synthesizing speech from the selection (no audio yet).
+    Synthesizing,
+    /// Read-aloud: playing the synthesized speech.
+    Speaking,
 }
 
 impl std::fmt::Display for State {
@@ -66,6 +75,8 @@ impl std::fmt::Display for State {
             State::Idle => write!(f, "idle"),
             State::Recording => write!(f, "recording"),
             State::Transcribing => write!(f, "transcribing"),
+            State::Synthesizing => write!(f, "synthesizing"),
+            State::Speaking => write!(f, "speaking"),
         }
     }
 }
@@ -100,6 +111,9 @@ pub struct Config {
     /// LLM configuration for command mode (text rewriting).
     #[serde(default)]
     pub llm: Option<llm::LlmConfig>,
+    /// Text-to-speech configuration for read-selection-aloud.
+    #[serde(default)]
+    pub tts: Option<TtsConfig>,
     /// Global hotkey configuration.
     #[serde(default)]
     pub hotkeys: Option<HotkeyConfig>,
@@ -117,6 +131,9 @@ pub struct HotkeyConfig {
     pub cancel: Option<String>,
     /// Hotkey to start command mode (e.g. "Super+Shift+C").
     pub command: Option<String>,
+    /// Hotkey to read the selected text aloud (e.g. "Super+Shift+R").
+    #[serde(alias = "read")]
+    pub speak: Option<String>,
 }
 
 /// Visual configuration for the bottom recording overlay.
@@ -148,6 +165,8 @@ pub struct OverlayColors {
     pub ring: Option<String>,
     pub recording: Option<String>,
     pub transcribing: Option<String>,
+    /// Override color for the read-aloud "speaking" bars.
+    pub speaking: Option<String>,
     pub glow: Option<String>,
 }
 
@@ -355,6 +374,56 @@ pub struct OpenAiConfig {
     pub model: String,
 }
 
+/// Text-to-speech configuration for the read-selection-aloud feature.
+///
+/// Opt-in (`enabled` defaults to `false`). v1 uses the Groq TTS endpoint;
+/// when `api_key` is absent the daemon falls back to the `[groq]` api_key /
+/// `WHISRS_GROQ_API_KEY` env var (TTS runs on the same Groq account).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TtsConfig {
+    /// Whether read-selection-aloud is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// TTS backend: `"groq"` (default), `"openai"`, `"tts-sidecar"`
+    /// (alias `"openai-compat"`, for local Kokoro/Supertonic servers), or
+    /// `"deepgram"` (Aura-2).
+    #[serde(default = "default_tts_backend")]
+    pub backend: String,
+    /// TTS model identifier (backend-specific). When omitted, each backend
+    /// applies its own sensible default (see [`crate::tts::create_backend`]),
+    /// so switching `backend` works without also hand-editing the model.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Voice name (backend-specific). When omitted, the backend's default
+    /// voice is used.
+    #[serde(default)]
+    pub voice: Option<String>,
+    /// Audio response format requested from the API (we decode WAV).
+    #[serde(default = "default_tts_response_format")]
+    pub response_format: String,
+    /// Optional dedicated API key; falls back to the backend's key when absent.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Endpoint URL for the `tts-sidecar` backend (OpenAI-compatible
+    /// `/v1/audio/speech`). Ignored by other backends.
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+impl Default for TtsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: default_tts_backend(),
+            model: None,
+            voice: None,
+            response_format: default_tts_response_format(),
+            api_key: None,
+            url: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalWhisperConfig {
     pub model_path: String,
@@ -407,6 +476,12 @@ fn default_groq_model() -> String {
 }
 fn default_openai_model() -> String {
     "gpt-4o-mini-transcribe".to_string()
+}
+fn default_tts_backend() -> String {
+    "groq".to_string()
+}
+fn default_tts_response_format() -> String {
+    "wav".to_string()
 }
 fn default_asr_sidecar_url() -> String {
     "http://127.0.0.1:8765/transcribe".to_string()
@@ -789,6 +864,145 @@ mod tests {
     }
 
     #[test]
+    fn speak_command_serializes_lowercase() {
+        let cmd = Command::Speak;
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(json, r#"{"cmd":"speak"}"#);
+    }
+
+    #[test]
+    fn speak_command_roundtrip() {
+        let parsed: Command = serde_json::from_str(r#"{"cmd":"speak"}"#).unwrap();
+        assert!(matches!(parsed, Command::Speak));
+    }
+
+    #[test]
+    fn speak_command_read_alias() {
+        let parsed: Command = serde_json::from_str(r#"{"cmd":"read"}"#).unwrap();
+        assert!(matches!(parsed, Command::Speak));
+    }
+
+    #[test]
+    fn config_tts_section_roundtrip() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            backend = "groq"
+
+            [tts]
+            enabled = true
+            model = "canopylabs/orpheus-v1-english"
+            voice = "autumn"
+            response_format = "wav"
+            "#,
+        )
+        .unwrap();
+
+        let tts = config.tts.as_ref().expect("tts section parsed");
+        assert!(tts.enabled);
+        assert_eq!(tts.model.as_deref(), Some("canopylabs/orpheus-v1-english"));
+        assert_eq!(tts.voice.as_deref(), Some("autumn"));
+        assert_eq!(tts.response_format, "wav");
+        assert!(tts.api_key.is_none());
+
+        // Round-trips back out and parses again identically.
+        let serialized = toml::to_string(&config).unwrap();
+        let reparsed: Config = toml::from_str(&serialized).unwrap();
+        assert!(reparsed.tts.unwrap().enabled);
+    }
+
+    #[test]
+    fn config_tts_backend_and_url_roundtrip() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            backend = "groq"
+
+            [tts]
+            enabled = true
+            backend = "tts-sidecar"
+            model = "kokoro"
+            voice = "af_heart"
+            url = "http://127.0.0.1:8880/v1/audio/speech"
+            "#,
+        )
+        .unwrap();
+
+        let tts = config.tts.as_ref().expect("tts section parsed");
+        assert_eq!(tts.backend, "tts-sidecar");
+        assert_eq!(
+            tts.url.as_deref(),
+            Some("http://127.0.0.1:8880/v1/audio/speech")
+        );
+
+        // Round-trips back out and parses again identically.
+        let serialized = toml::to_string(&config).unwrap();
+        let reparsed: Config = toml::from_str(&serialized).unwrap();
+        let tts = reparsed.tts.unwrap();
+        assert_eq!(tts.backend, "tts-sidecar");
+        assert_eq!(
+            tts.url.as_deref(),
+            Some("http://127.0.0.1:8880/v1/audio/speech")
+        );
+    }
+
+    #[test]
+    fn config_tts_backend_defaults_to_groq() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            backend = "groq"
+
+            [tts]
+            enabled = true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.tts.unwrap().backend, "groq");
+    }
+
+    #[test]
+    fn config_tts_defaults_when_minimal() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            backend = "groq"
+
+            [tts]
+            enabled = true
+            "#,
+        )
+        .unwrap();
+
+        let tts = config.tts.unwrap();
+        assert!(tts.enabled);
+        // model/voice are left unset in config — each backend supplies its own
+        // default at build time (see tts::create_backend), so switching backend
+        // doesn't require also overriding the model.
+        assert!(tts.model.is_none());
+        assert!(tts.voice.is_none());
+        assert_eq!(tts.response_format, "wav");
+    }
+
+    #[test]
+    fn config_without_tts_is_none() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            backend = "groq"
+            "#,
+        )
+        .unwrap();
+        assert!(config.tts.is_none());
+    }
+
+    #[test]
+    fn hotkey_speak_read_alias() {
+        let hotkeys: HotkeyConfig = toml::from_str(r#"read = "Super+Shift+R""#).unwrap();
+        assert_eq!(hotkeys.speak.as_deref(), Some("Super+Shift+R"));
+    }
+
+    #[test]
     fn response_json_format() {
         let resp = Response::Ok { state: State::Idle };
         let json = serde_json::to_string(&resp).unwrap();
@@ -809,6 +1023,23 @@ mod tests {
         assert_eq!(State::Idle.to_string(), "idle");
         assert_eq!(State::Recording.to_string(), "recording");
         assert_eq!(State::Transcribing.to_string(), "transcribing");
+        assert_eq!(State::Synthesizing.to_string(), "synthesizing");
+        assert_eq!(State::Speaking.to_string(), "speaking");
+    }
+
+    #[test]
+    fn state_serde_wire_format() {
+        // serde rename_all = "lowercase" governs the IPC wire form.
+        assert_eq!(
+            serde_json::to_string(&State::Synthesizing).unwrap(),
+            r#""synthesizing""#
+        );
+        assert_eq!(
+            serde_json::to_string(&State::Speaking).unwrap(),
+            r#""speaking""#
+        );
+        let parsed: State = serde_json::from_str(r#""speaking""#).unwrap();
+        assert_eq!(parsed, State::Speaking);
     }
 
     #[test]
@@ -960,6 +1191,7 @@ mod tests {
             local_parakeet: None,
             asr_sidecar: None,
             llm: None,
+            tts: None,
             hotkeys: None,
             overlay: None,
         };
@@ -1002,6 +1234,7 @@ mod tests {
             local_parakeet: None,
             asr_sidecar: None,
             llm: None,
+            tts: None,
             hotkeys: None,
             overlay: None,
         };
@@ -1029,6 +1262,7 @@ mod tests {
             local_parakeet: None,
             asr_sidecar: None,
             llm: None,
+            tts: None,
             hotkeys: None,
             overlay: None,
         };
@@ -1073,6 +1307,7 @@ mod tests {
                 model: "microsoft/VibeVoice-ASR-HF".to_string(),
             }),
             llm: None,
+            tts: None,
             hotkeys: None,
             overlay: None,
         };
@@ -1119,6 +1354,7 @@ mod tests {
             local_parakeet: None,
             asr_sidecar: None,
             llm: None,
+            tts: None,
             hotkeys: None,
             overlay: None,
         };

@@ -27,6 +27,7 @@ const ASCII_BANNER: &str = concat!(
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
 const RED: &str = "\x1b[31m";
+const CYAN: &str = "\x1b[36m";
 const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
 
@@ -64,6 +65,9 @@ enum SubCmd {
     },
     /// Command mode: select text, speak an instruction, LLM rewrites it in place
     Command,
+    /// Read the selected text aloud via TTS (press again to stop playback)
+    #[command(alias = "read")]
+    Speak,
     /// Restart the whisrs daemon (uses the systemd user service when present)
     Restart,
 }
@@ -84,6 +88,8 @@ fn format_state(state: State, use_color: bool) -> String {
         State::Idle => format!("{BOLD}idle{RESET}"),
         State::Recording => format!("{BOLD}{GREEN}recording{RESET}"),
         State::Transcribing => format!("{BOLD}{YELLOW}transcribing{RESET}"),
+        State::Synthesizing => format!("{BOLD}{CYAN}synthesizing{RESET}"),
+        State::Speaking => format!("{BOLD}{GREEN}speaking{RESET}"),
     }
 }
 
@@ -130,6 +136,9 @@ async fn main() -> anyhow::Result<()> {
         }
         SubCmd::Command => {
             send_command(Command::CommandMode).await?;
+        }
+        SubCmd::Speak => {
+            send_command(Command::Speak).await?;
         }
         SubCmd::Restart => {
             cmd_restart()?;
