@@ -71,6 +71,7 @@ model = "gpt-4o-mini-transcribe"
 # transcription event model over WebSocket instead of HTTP.
 # In the current whisrs typing pipeline, replaceable interim partials are kept
 # internal and only completed phrases are typed at the cursor.
+# Note (Lemonade): load the model server-side (not just `pull`) or it returns empty text.
 [openai-compatible-realtime]
 url = "ws://localhost:12345/realtime"
 model = "Whisper-Tiny"
